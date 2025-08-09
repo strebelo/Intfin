@@ -14,8 +14,8 @@ st.write(
 
 # ---- Sidebar controls ----
 st.sidebar.header("Model Parameters")
-a = st.sidebar.slider("Inflation gap coefficient", min_value=-2.0, max_value=3.0, value=1.0, step=0.1)
-b = st.sidebar.slider("Unemployment gap coefficient", min_value=-3.0, max_value=2.0, value=-0.5, step=0.1)
+a = st.sidebar.slider("Inflation gap coefficient", min_value=-3.0, max_value=3.0, value=1.0, step=0.1)
+b = st.sidebar.slider("Unemployment gap coefficient", min_value=-3.0, max_value=3.0, value=-0.5, step=0.1)
 r_star = st.sidebar.slider("Neutral real rate r* (%)", min_value=-1.0, max_value=3.0, value=0.5, step=0.1)
 pi_star = st.sidebar.slider("Inflation target π* (%)", min_value=0.0, max_value=4.0, value=2.0, step=0.1)
 u_star = st.sidebar.slider("Natural unemployment u* (%)", min_value=3.0, max_value=8.0, value=4.0, step=0.1)
@@ -118,18 +118,35 @@ if df.empty:
     st.stop()
 
 # ---- Taylor rule with smoothing ----
-# i_t = rho * i_{t-1} + (1 - rho) * ( r* + pi* + a*(pi_t - pi*) + b*(u_t - u*) )
+# i_t = rho * i_{t-L} + (1 - rho) * ( r* + pi* + a*(pi_t - pi*) + b*(u_t - u*) )
 base_term = r_star + pi_star + a*(df['inflation_used'] - pi_star) + b*(df['unemployment'] - u_star)
 
-modeled = []
-i_prev = df['fed_funds_actual'].iloc[0]
-if pd.isna(i_prev):
-    i_prev = base_term.iloc[0]
+L = 3  # lag length for smoothing: t-3
 
-for val in base_term:
-    i_t = rho * i_prev + (1.0 - rho) * val
-    modeled.append(i_t)
-    i_prev = i_t
+# 1) Base (unsmoothed) Taylor term each period
+base_term = r_star + pi_star \
+            + a * (df['inflation_used'] - pi_star) \
+            + b * (df['unemployment'] - u_star)
+
+n = len(df)
+modeled = [None] * n
+
+# 2) Seed the first L observations
+for k in range(min(L, n)):
+    v = df['fed_funds_actual'].iloc[k]
+    modeled[k] = v if not pd.isna(v) else base_term.iloc[k]
+
+# 3) Recursive smoothing using t-3
+for t in range(L, n):
+    # prefer actual at t-3 if available; else use modeled[t-3]
+    i_lag_actual = df['fed_funds_actual'].iloc[t - L]
+    i_lag = i_lag_actual if not pd.isna(i_lag_actual) else modeled[t - L]
+
+    i_t = rho * i_lag + (1.0 - rho) * base_term.iloc[t]
+    # Optional: zero lower bound
+    # i_t = max(0.0, i_t)
+
+    modeled[t] = i_t
 
 df['fed_funds_modeled'] = modeled
 
