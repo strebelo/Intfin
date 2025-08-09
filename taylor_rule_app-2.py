@@ -119,7 +119,7 @@ if uploaded is not None:
 
     for t in range(LAG, len(ff_model)):
         baseline = r_star + pi_star + a * (pi_t[t] - pi_star) + b * (u_t[t] - u_star)
-        prior = ff_model[t - LAG]
+        prior = ff_actual[t - LAG]
         if np.isnan(prior):
             ff_model[t] = (1 - rho) * baseline
         else:
