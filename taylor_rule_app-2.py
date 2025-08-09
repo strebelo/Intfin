@@ -103,9 +103,9 @@ if uploaded is not None:
             pi_star = st.number_input("π* (inflation target, %)", value=2.0, step=0.1, format="%.2f")
         with colB:
             u_star = st.number_input("u* (natural unemployment rate, %)", value=4.0, step=0.1, format="%.2f")
-            a = st.number_input("a (inflation gap coefficient)", value=1.5, step=0.1, format="%.2f")
+            a = st.number_input("a (inflation gap coefficient)", value=1, step=0.1, format="%.2f")
         with colC:
-            b = st.number_input("b (unemployment gap coefficient)", value=1.0, step=0.1, format="%.2f")
+            b = st.number_input("b (unemployment gap coefficient)", value=-0.5, step=0.1, format="%.2f")
             rho = st.slider("ρ (smoothing on FFₜ₋₃)", min_value=0.0, max_value=0.99, value=0.8, step=0.01)
 
         st.caption("Rule used: **FFₜ = ρ·FFₜ₋₃ + (1−ρ)·[ r* + π* + a·(πₜ − π*) + b·(uₜ − u*) ]**")
