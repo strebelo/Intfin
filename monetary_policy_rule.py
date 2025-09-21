@@ -20,8 +20,8 @@ i_t = rho * i_{t-L} + (1 - rho) * [ r* + pi* + a*(pi_t - pi*) + b*(u_t - u*) ]
 st.sidebar.header("Model Parameters")
 a = st.sidebar.slider("Inflation gap coefficient", min_value=-3.0, max_value=3.0, value=0.0, step=0.1)
 b = st.sidebar.slider("Unemployment gap coefficient", min_value=-3.0, max_value=3.0, value=0.0, step=0.1)
-r_star = st.sidebar.slider("Neutral real rate r* (%)", min_value=-1.0, max_value=3.0, value=0., step=0.1)
-pi_star = st.sidebar.slider("Inflation target π* (%)", min_value=0.0, max_value=4.0, value=0, step=0.1)
+r_star = st.sidebar.slider("Neutral real rate r* (%)", min_value=-1.0, max_value=3.0, value=0.0, step=0.1)
+pi_star = st.sidebar.slider("Inflation target π* (%)", min_value=0.0, max_value=4.0, value=0.0 step=0.1)
 u_star = st.sidebar.slider("Natural unemployment u* (%)", min_value=3.0, max_value=8.0, value=4.0, step=0.1)
 
 rho = st.sidebar.slider("Interest rate smoothing ρ", min_value=0.0, max_value=0.99, value=0.0, step=0.01,
