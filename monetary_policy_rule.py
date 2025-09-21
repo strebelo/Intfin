@@ -12,8 +12,10 @@ st.write(
     "You can get these data from fred.stlouisfed.org or upload the file provided"
 )
 
-st.latex(r"""
-i_t = \rho \, i_{t-L} + (1 - \rho) \left[ r^{*} + \pi^{*} + a (\pi_t - \pi^{*}) + b (u_t - u^{*}) \right]
+st.markdown(r"""
+**Model equation**
+
+$i_t = \rho\, i_{t-L} + (1-\rho)\left(r^{*} + \pi^{*} + a(\pi_t-\pi^{*}) + b(u_t-u^{*})\right) $
 """)
 
 # ---- Sidebar controls ----
