@@ -187,11 +187,7 @@ with col2:
     csv_bytes = out.to_csv(index=False).encode('utf-8')
     st.download_button("Download modeled CSV", data=csv_bytes, file_name="taylor_rule_modeled.csv", mime="text/csv")
 
-st.markdown("---")
-st.subheader("Data Preview")
-st.dataframe(df[['date','fed_funds_actual','inflation_used','unemployment','fed_funds_modeled']], use_container_width=True)
+#st.markdown("---")
+#st.subheader("Data Preview")
+#st.dataframe(df[['date','fed_funds_actual','inflation_used','unemployment','fed_funds_modeled']], use_container_width=True)
 
-st.markdown(r"""
-**Model equation**
-\[ i_t = \rho\, i_{t-1} + (1-\rho)\,\big(r^{*} + \pi^{*} + a(\pi_t-\pi^{*}) + b(u_t-u^{*})\big)\,. \]
-""")
