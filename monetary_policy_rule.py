@@ -9,7 +9,7 @@ st.set_page_config(page_title="Monetary policy simulator", layout="wide")
 st.title("Monetary policy simulator")
 st.write(
     "Upload a CSV file with the Federal Funds Rate, three inflation series (Headline, Core CPI, Core PCE), and the unemployment rate. "
-    "You can get these data from www.fred.com or upload the file provided"
+    "You can get these data from fred.stlouisfed.org or upload the file provided"
 )
 
 st.latex(r"""
