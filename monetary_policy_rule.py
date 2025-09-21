@@ -12,9 +12,9 @@ st.write(
     "You can get these data from www.fred.com or upload the file provided"
 )
 
-    """
-    i_t = rho * i_{t-L} + (1 - rho) * [ r* + pi* + a*(pi_t - pi*) + b*(u_t - u*) ]
-    """
+"""
+i_t = rho * i_{t-L} + (1 - rho) * [ r* + pi* + a*(pi_t - pi*) + b*(u_t - u*) ]
+"""
 
 # ---- Sidebar controls ----
 st.sidebar.header("Model Parameters")
