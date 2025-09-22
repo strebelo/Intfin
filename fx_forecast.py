@@ -1,196 +1,231 @@
 # fx_forecast.py
-# Streamlit app to forecast exchange rates with user-chosen regressors and lags
-# Works with or without statsmodels installed (falls back to NumPy OLS if needed)
+# Robust FX forecasting app that runs even if some packages are missing.
+# It detects missing imports and falls back to pure NumPy/Streamlit where possible.
 
-import pandas as pd
-import numpy as np
 import streamlit as st
-import matplotlib.pyplot as plt
 
-# ---------- Optional statsmodels import with graceful fallback ----------
+# ---- Explicit import probes so redacted errors don't hide the root cause ----
+missing = []
+
+try:
+    import pandas as pd
+except Exception:
+    missing.append("pandas"); pd = None
+
+try:
+    import numpy as np
+except Exception:
+    missing.append("numpy"); np = None
+
+# Optional: statsmodels
 HAS_SM = True
 try:
-    import statsmodels.api as sm  # preferred
+    import statsmodels.api as sm
 except Exception:
     HAS_SM = False
 
-    # Minimal replacements for add_constant and OLS fit/predict via NumPy
-    def add_constant(X):
-        X = pd.DataFrame(X).copy()
-        if "const" not in X.columns:
-            X.insert(0, "const", 1.0)
-        return X
+# Optional: matplotlib (we'll prefer st.line_chart to avoid this dependency)
+HAS_MPL = True
+try:
+    import matplotlib.pyplot as plt  # noqa: F401
+except Exception:
+    HAS_MPL = False
 
-    class SimpleOLSResult:
-        def __init__(self, params, columns):
-            self.params = pd.Series(params, index=columns)
+# Optional Excel readers
+HAS_OPENPYXL = True
+try:
+    import openpyxl  # noqa: F401
+except Exception:
+    HAS_OPENPYXL = False
 
-        def predict(self, X):
-            X = pd.DataFrame(X, columns=self.params.index)
-            return X.values @ self.params.values
+HAS_XLRD = True
+try:
+    import xlrd  # noqa: F401
+except Exception:
+    HAS_XLRD = False
 
-        # Small text summary so the UI shows *something* without statsmodels
-        def text_summary(self):
-            return (
-                "Simple OLS (NumPy fallback)\n"
-                f"Parameters ({len(self.params)}):\n"
-                + "\n".join(f"  {k}: {v:.6g}" for k, v in self.params.items())
-            )
-
-    def np_ols_fit(y, X_df):
-        # X_df must already include a const column
-        X = X_df.values
-        y = y.values
-        # Solve (X'X)beta = X'y
-        beta, *_ = np.linalg.lstsq(X, y, rcond=None)
-        return SimpleOLSResult(beta, X_df.columns)
-
-# ---------- Streamlit UI ----------
 st.set_page_config(page_title="FX Forecast", layout="wide")
 st.title("Exchange-Rate Forecasting App")
+
+# If core libs are missing, stop with a clear message
+core_missing = [m for m in missing if m in ("pandas", "numpy")]
+if core_missing:
+    st.error(
+        "Missing required packages: " + ", ".join(core_missing) +
+        "\n\nAdd them to requirements.txt and redeploy."
+    )
+    st.stop()
+
+# Minimal NumPy OLS fallback if statsmodels is not available
+def add_constant_df(Xdf):
+    Xdf = pd.DataFrame(Xdf).copy()
+    if "const" not in Xdf.columns:
+        Xdf.insert(0, "const", 1.0)
+    return Xdf
+
+class SimpleOLSResult:
+    def __init__(self, params, columns):
+        self.params = pd.Series(params, index=columns)
+
+    def predict(self, X):
+        X = pd.DataFrame(X, columns=self.params.index)
+        return X.values @ self.params.values
+
+    def text_summary(self):
+        return (
+            "Simple OLS (NumPy fallback)\n"
+            f"Parameters ({len(self.params)}):\n" +
+            "\n".join(f"  {k}: {v:.6g}" for k, v in self.params.items())
+        )
+
+def np_ols_fit(y, X_df):
+    X = X_df.values
+    y = y.values
+    beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+    return SimpleOLSResult(beta, X_df.columns)
 
 st.write(
     """
     Upload a file with **monthly** data (CSV or Excel). Include columns like:
-    - `date` (optional but recommended)
-    - Spot exchange rate (e.g., `usd_gbp`)
-    - Inflation (e.g., `us_infl`, `uk_infl`)
-    - **Quarterly** GDP growth (monthly rows can be forward-filled or left with NaNs)
-    - Trade deficits, etc.
-
-    Choose regressors and lags; we estimate an OLS regression and compare
-    its out-of-sample forecast against a random-walk benchmark.
+    - `date` (optional)
+    - Spot exchange rate (dependent variable)
+    - Inflation, GDP growth, trade balances (explanatory variables)
+    
+    Choose regressors and lags; we estimate OLS and compare out-of-sample
+    forecasts to a random-walk benchmark.
     """
 )
 
-# ---------- Upload ----------
-uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx", "xls"])
-if uploaded_file is None:
+uploaded = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx", "xls"])
+if uploaded is None:
+    # Show which optional deps are missing (to fix requirements) but don’t block
+    if not HAS_SM:
+        st.info("Optional: `statsmodels` not found — using NumPy OLS fallback.")
+    if not HAS_MPL:
+        st.info("Optional: `matplotlib` not found — using Streamlit charts.")
     st.stop()
 
-# Robust reader (CSV preferred; Excel requires openpyxl/xlrd)
+# ---- Robust file read ----
 try:
-    if uploaded_file.name.lower().endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_excel(uploaded_file)
+    name = uploaded.name.lower()
+    if name.endswith(".csv"):
+        df = pd.read_csv(uploaded)
+    elif name.endswith(".xlsx"):
+        if not HAS_OPENPYXL:
+            st.error("`openpyxl` not installed. Add it to requirements.txt or upload CSV.")
+            st.stop()
+        df = pd.read_excel(uploaded, engine="openpyxl")
+    else:  # .xls
+        if not HAS_XLRD:
+            st.error("`xlrd` not installed for .xls files. Add it or upload CSV/.xlsx.")
+            st.stop()
+        df = pd.read_excel(uploaded, engine="xlrd")
 except Exception as e:
     st.error(f"Could not read the file: {e}")
     st.stop()
 
 st.write("Preview:", df.head())
 
-# Ensure a datetime index if `date` exists
+# Datetime index if available
 if "date" in df.columns:
     try:
         df["date"] = pd.to_datetime(df["date"])
         df = df.set_index("date").sort_index()
     except Exception:
-        st.warning("Could not parse 'date' column; continuing without a datetime index.")
+        st.warning("Could not parse 'date' — continuing without a datetime index.")
 
-# ---------- Variable selection ----------
-all_vars = list(df.columns)
-if len(all_vars) == 0:
-    st.error("No columns found in the uploaded data.")
+# ---- Variable selection ----
+all_cols = list(df.columns)
+if not all_cols:
+    st.error("Your file has no columns.")
     st.stop()
 
-target_var = st.selectbox("Dependent variable (exchange rate)", all_vars)
-exog_candidates = [v for v in all_vars if v != target_var]
-exog_vars = st.multiselect("Independent variables (choose ≥1)", exog_candidates, default=exog_candidates[:1])
+target = st.selectbox("Dependent variable (exchange rate)", all_cols)
+exog_choices = [c for c in all_cols if c != target]
+exogs = st.multiselect("Independent variables (choose ≥1)", exog_choices,
+                       default=exog_choices[:1] if exog_choices else [])
 
-if not exog_vars:
+if not exogs:
     st.warning("Select at least one independent variable.")
     st.stop()
 
-max_lag = st.slider("Number of lags to include for each chosen variable", 0, 12, 1)
+max_lag = st.slider("Number of lags per chosen variable", 0, 12, 1)
 
-# ---------- Build lagged design matrix ----------
-def make_lags(dataframe, cols, lags):
+def make_lags(df_in, cols, L):
     lagged = {}
     for v in cols:
-        for L in range(1, lags + 1):
-            lagged[f"{v}_lag{L}"] = dataframe[v].shift(L)
-    return pd.DataFrame(lagged, index=dataframe.index)
+        for l in range(1, L + 1):
+            lagged[f"{v}_lag{l}"] = df_in[v].shift(l)
+    return pd.DataFrame(lagged, index=df_in.index)
 
-X = df[exog_vars].copy()
+X = df[exogs].copy()
 if max_lag > 0:
-    X = pd.concat([X, make_lags(df, exog_vars, max_lag)], axis=1)
+    X = pd.concat([X, make_lags(df, exogs, max_lag)], axis=1)
 
-Y = df[target_var].copy()
+Y = df[target].copy()
 data = pd.concat([Y, X], axis=1).dropna()
 if data.empty:
-    st.error("After adding lags and dropping NaNs, no rows remain. Try fewer lags or check your data.")
+    st.error("After adding lags and dropping NaNs, no rows remain. Try fewer lags or check data.")
     st.stop()
 
-Y = data[target_var]
-X = data.drop(columns=[target_var])
+Y = data[target]
+X = data.drop(columns=[target])
 
 # Add constant
 if HAS_SM:
     X = sm.add_constant(X)
 else:
-    X = add_constant(X)
+    X = add_constant_df(X)
 
-# ---------- Estimate model ----------
+# ---- Estimate ----
 if HAS_SM:
-    model = sm.OLS(Y, X).fit()
+    fit = sm.OLS(Y, X).fit()
+    st.subheader("Regression Results")
+    st.text(fit.summary().as_text())
 else:
-    model = np_ols_fit(Y, X)
+    fit = np_ols_fit(Y, X)
+    st.subheader("Regression Results (fallback)")
+    st.text(fit.text_summary())
 
-st.subheader("Regression Results")
-if HAS_SM:
-    # statsmodels' summary is a text table; render as preformatted text
-    st.text(model.summary().as_text())
-else:
-    st.text(model.text_summary())
+# In-sample R^2
+yhat_in = fit.predict(X)
+ss_res = float(np.sum((Y - yhat_in) ** 2))
+ss_tot = float(np.sum((Y - Y.mean()) ** 2))
+r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+st.metric("In-sample R²", f"{r2:.4f}")
 
-# In-sample R^2 (compute ourselves for consistency across both paths)
-y_hat_in = model.predict(X)
-ss_res = np.sum((Y - y_hat_in) ** 2)
-ss_tot = np.sum((Y - Y.mean()) ** 2)
-r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
-st.write(f"**In-sample R²:** {r2:.4f}")
-
-# ---------- Out-of-sample forecast vs random walk ----------
+# ---- OOS vs Random Walk ----
 st.subheader("Out-of-Sample Forecast Test")
-split_ratio = st.slider("Fraction of data used for training", 0.5, 0.95, 0.8)
-split_idx = int(len(Y) * split_ratio)
+ratio = st.slider("Training fraction", 0.5, 0.95, 0.8)
+split = int(len(Y) * ratio)
 
-train_X, test_X = X.iloc[:split_idx], X.iloc[split_idx:]
-train_Y, test_Y = Y.iloc[:split_idx], Y.iloc[split_idx:]
+X_tr, X_te = X.iloc[:split], X.iloc[split:]
+Y_tr, Y_te = Y.iloc[:split], Y.iloc[split:]
 
 if HAS_SM:
-    oos_model = sm.OLS(train_Y, train_X).fit()
+    fit_oos = sm.OLS(Y_tr, X_tr).fit()
 else:
-    oos_model = np_ols_fit(train_Y, train_X)
+    fit_oos = np_ols_fit(Y_tr, X_tr)
 
-pred = oos_model.predict(test_X)
+pred = fit_oos.predict(X_te)
+rw = Y.shift(1).iloc[split:]
 
-# Random-walk benchmark: y_{t-1}
-rw_forecast = Y.shift(1).iloc[split_idx:]
+pred, Y_te = pred.align(Y_te, join="inner")
+rw, Y_te = rw.align(Y_te, join="inner")
 
-# Align (just in case)
-pred, test_Y_aligned = pred.align(test_Y, join="inner")
-rw_forecast, test_Y_aligned = rw_forecast.align(test_Y_aligned, join="inner")
+mse_model = float(np.mean((pred - Y_te) ** 2))
+mse_rw = float(np.mean((rw - Y_te) ** 2))
 
-mse_model = float(np.mean((pred - test_Y_aligned) ** 2))
-mse_rw = float(np.mean((rw_forecast - test_Y_aligned) ** 2))
+c1, c2 = st.columns(2)
+with c1: st.metric("OOS MSE — Model", f"{mse_model:.6g}")
+with c2: st.metric("OOS MSE — Random Walk", f"{mse_rw:.6g}")
 
-col1, col2 = st.columns(2)
-with col1:
-    st.metric("OOS MSE — Model", f"{mse_model:.6g}")
-with col2:
-    st.metric("OOS MSE — Random Walk", f"{mse_rw:.6g}")
+st.line_chart(
+    pd.DataFrame({"Actual": Y_te, "Model": pred, "Random walk": rw})
+    .dropna()
+)
 
-fig, ax = plt.subplots()
-ax.plot(test_Y_aligned.index, test_Y_aligned.values, label="Actual")
-ax.plot(pred.index, pred.values, label="Model forecast")
-ax.plot(rw_forecast.index, rw_forecast.values, label="Random walk", linestyle="--")
-ax.set_title("Out-of-Sample Forecast Comparison")
-ax.legend()
-st.pyplot(fig)
-
-# ---------- Secret button to reveal performance ----------
+# ---- Secret button ----
 if st.button("Reveal secret forecast comparison"):
     if mse_model < mse_rw:
         st.success("✅ Model beats the random walk.")
@@ -198,3 +233,13 @@ if st.button("Reveal secret forecast comparison"):
         st.warning("⚠️ Random walk performs better.")
     else:
         st.info("⚖️ Tie: same MSE.")
+
+# ---- Footer: show missing non-core deps so you can fix requirements.txt ----
+notes = []
+if not HAS_SM: notes.append("statsmodels")
+if not HAS_MPL: notes.append("matplotlib (optional)")
+if not HAS_OPENPYXL: notes.append("openpyxl (needed for .xlsx)")
+if not HAS_XLRD: notes.append("xlrd (needed for legacy .xls)")
+
+if notes:
+    st.caption("Optional/missing packages: " + ", ".join(notes))
