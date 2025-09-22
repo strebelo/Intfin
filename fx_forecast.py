@@ -6,7 +6,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
-from statsmodels.api import OLS, add_constant
+from statsmodels.api import add_constant
+from statsmodels.regression.linear_model import OLS
+
 
 st.set_page_config(page_title="FX Forecasting Lab", layout="wide")
 st.title("FX Forecasting Lab: Competing with the Random Walk")
