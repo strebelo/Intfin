@@ -1,3 +1,7 @@
 streamlit
+pandas
 numpy
+statsmodels
 matplotlib
+openpyxl   # for .xlsx
+xlrd       # only if you’ll upload legacy .xls
