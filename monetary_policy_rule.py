@@ -8,14 +8,14 @@ st.set_page_config(page_title="Monetary policy simulator", layout="wide")
 
 st.title("Monetary policy simulator")
 st.write(
-    "Upload a CSV file with the Federal Funds Rate, three inflation series (Headline, Core CPI, Core PCE), and the unemployment rate. "
+    "Upload a CSV file with monthly data for the Federal Funds Rate, three inflation series (Headline, Core CPI, Core PCE), and the unemployment rate. "
     "You can get these data from fred.stlouisfed.org or upload the file provided"
 )
 
 st.markdown(r"""
 **Model equation**
 
-$i_t = \rho\, i_{t-L} + (1-\rho)\left(r^{*} + \pi^{*} + a(\pi_t-\pi^{*}) + b(u_t-u^{*})\right) $
+$i_t = \rho\, i_{t-3} + (1-\rho)\left(r^{*} + \pi^{*} + a(\pi_t-\pi^{*}) + b(u_t-u^{*})\right) $
 """)
 
 # ---- Sidebar controls ----
