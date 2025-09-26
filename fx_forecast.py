@@ -207,6 +207,7 @@ if not all_cols:
     st.stop()
 
 target = st.selectbox("Dependent variable (exchange rate)", all_cols)
+index=2 
 exog_choices = [c for c in all_cols if c != target]
 
 exogs = st.multiselect(
