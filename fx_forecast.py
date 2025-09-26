@@ -1,6 +1,7 @@
 # fx_forecast.py
 # Robust FX forecasting app with optional second-row "codes".
 # Student controls AR lags on the exchange rate; exogenous variables enter contemporaneously (optional).
+# The app now immediately reveals whether the random walk performs better (no button).
 
 import streamlit as st
 
@@ -290,17 +291,24 @@ c1, c2 = st.columns(2)
 with c1: st.metric("OOS MSE — Model", f"{mse_model:.6g}")
 with c2: st.metric("OOS MSE — Random Walk", f"{mse_rw:.6g}")
 
-chart_df = pd.DataFrame({"Actual": Y_te, "Model": pred, "Random walk": rw}).dropna()
-st.line_chart(chart_df)
-
-# ---- Secret button ----
-if st.button("Reveal secret forecast comparison"):
+# ---- Immediate verdict (no button) ----
+if np.isfinite(mse_model) and np.isfinite(mse_rw):
     if mse_model < mse_rw:
-        st.success("✅ Model beats the random walk.")
+        improvement = (mse_rw - mse_model) / mse_rw * 100.0 if mse_rw > 0 else np.nan
+        st.success(f"✅ Model beats the random walk"
+                   + (f" (MSE ↓ {improvement:.2f}%)." if np.isfinite(improvement) else "."))
     elif mse_model > mse_rw:
-        st.warning("⚠️ Random walk performs better.")
+        deterioration = (mse_model - mse_rw) / mse_rw * 100.0 if mse_rw > 0 else np.nan
+        st.warning(f"⚠️ Random walk performs better"
+                   + (f" (Model MSE ↑ {deterioration:.2f}% vs RW)." if np.isfinite(deterioration) else "."))
     else:
         st.info("⚖️ Tie: same MSE.")
+else:
+    st.info("Results not comparable due to insufficient or non-finite values.")
+
+# ---- Chart ----
+chart_df = pd.DataFrame({"Actual": Y_te, "Model": pred, "Random walk": rw}).dropna()
+st.line_chart(chart_df)
 
 # ---- Footer: show missing non-core deps so you can fix requirements.txt ----
 notes = []
