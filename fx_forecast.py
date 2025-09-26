@@ -1,6 +1,6 @@
 # fx_forecast.py
 # Robust FX forecasting app with support for a second-row "codes" line.
-# It detects missing imports and falls back to pure NumPy/Streamlit where possible.
+# Student can choose AR lags on the exchange rate (target); other variables enter contemporaneously.
 
 import streamlit as st
 
@@ -100,7 +100,6 @@ def detect_probable_codes_row(df, date_col="date"):
     non_date_cols = [c for c in df.columns if c != date_col]
     if not non_date_cols:
         return False
-    # Count how many non-date columns in row0 are non-numeric strings
     nonnum = 0
     for c in non_date_cols:
         v = row0[c]
@@ -110,8 +109,16 @@ def detect_probable_codes_row(df, date_col="date"):
             float(str(v))
         except Exception:
             nonnum += 1
-    # If at least 1/3 of non-date cols look non-numeric, assume it's a codes row
     return nonnum >= max(1, len(non_date_cols) // 3)
+
+def make_target_lags(series, L, name):
+    """Create lag columns for the target only."""
+    if L <= 0:
+        return pd.DataFrame(index=series.index)
+    cols = {}
+    for l in range(1, L + 1):
+        cols[f"{name}_lag{l}"] = series.shift(l)
+    return pd.DataFrame(cols, index=series.index)
 
 # -------- UI --------
 st.write(
@@ -126,7 +133,6 @@ st.write(
 
 uploaded = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx", "xls"])
 if uploaded is None:
-    # Show which optional deps are missing (to fix requirements) but don’t block
     if not HAS_SM:
         st.info("Optional: `statsmodels` not found — using NumPy OLS fallback.")
     if not HAS_MPL:
@@ -155,7 +161,6 @@ except Exception as e:
 # ---- Handle optional codes row on line 2 ----
 st.subheader("Data Preview & Options")
 
-# Allow user to force whether row 2 contains codes; default to heuristic
 heuristic_codes = detect_probable_codes_row(df, date_col="date" if "date" in df.columns else None)
 use_codes_row = st.checkbox("Row 2 contains variable codes (keep for reference, exclude from data)",
                             value=heuristic_codes)
@@ -201,30 +206,25 @@ if not all_cols:
 
 target = st.selectbox("Dependent variable (exchange rate)", all_cols)
 exog_choices = [c for c in all_cols if c != target]
-exogs = st.multiselect("Independent variables (choose ≥1)", exog_choices,
+exogs = st.multiselect("Independent variables (contemporaneous only)", exog_choices,
                        default=exog_choices[:1] if exog_choices else [])
 
-if not exogs:
-    st.warning("Select at least one independent variable.")
+if not exogs and len(all_cols) > 1:
+    st.warning("Select at least one independent variable (contemporaneous).")
     st.stop()
 
-max_lag = st.slider("Number of lags per chosen variable", 0, 12, 1)
+# ---- AR lags on the exchange rate only ----
+ar_lags = st.slider("Number of AR lags on the exchange rate", 0, 12, 1)
 
-def make_lags(df_in, cols, L):
-    lagged = {}
-    for v in cols:
-        for l in range(1, L + 1):
-            lagged[f"{v}_lag{l}"] = df_in[v].shift(l)
-    return pd.DataFrame(lagged, index=df_in.index)
+Y = df[target].astype(float)
+X_exog = df[exogs].astype(float) if exogs else pd.DataFrame(index=df.index)
+X_ar = make_target_lags(Y, ar_lags, name=target)
+X = pd.concat([X_exog, X_ar], axis=1)
 
-X = df[exogs].copy()
-if max_lag > 0:
-    X = pd.concat([X, make_lags(df, exogs, max_lag)], axis=1)
-
-Y = df[target].copy()
-data = pd.concat([Y, X], axis=1).dropna()
+# Align and drop NaNs introduced by lags
+data = pd.concat([Y.rename(target), X], axis=1).dropna()
 if data.empty:
-    st.error("After adding lags and dropping NaNs, no rows remain. Try fewer lags or check data.")
+    st.error("After adding AR lags and dropping NaNs, no rows remain. Try fewer lags or check data.")
     st.stop()
 
 Y = data[target].astype(float)
@@ -240,7 +240,6 @@ else:
 st.subheader("Regression Results")
 if HAS_SM:
     fit = sm.OLS(Y, X).fit()
-    # Some environments still throw on .summary(); provide safe fallback
     try:
         st.text(fit.summary().as_text())
     except Exception as e:
