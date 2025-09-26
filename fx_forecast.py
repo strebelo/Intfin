@@ -1,5 +1,6 @@
 import streamlit as st
 
+# ------------------ Safe imports ---------------------------------------------
 missing = []
 try:
     import pandas as pd
@@ -35,7 +36,7 @@ if any(m in ("pandas", "numpy") for m in missing):
     st.error("Missing required packages: " + ", ".join(missing))
     st.stop()
 
-# ---------------------------------------------------------------- Utilities ---
+# ------------------ Utilities -------------------------------------------------
 def add_constant_df(Xdf):
     if "const" not in Xdf.columns:
         Xdf.insert(0, "const", 1.0)
@@ -83,16 +84,16 @@ def make_target_lags(series, L, name):
         return pd.DataFrame(index=series.index)
     return pd.concat({f"{name}_lag{l}": series.shift(l) for l in range(1, L + 1)}, axis=1)
 
-# ------------------------------------------------------------ Instructions ---
+# ------------------ Instructions ---------------------------------------------
 st.write("""
 **File format (monthly):**
-1) **Row 1**: variable names (e.g., `date`, `spot`, `cpi_us`, …)  
+1) **Row 1**: variable names (e.g., `date`, `spot exchange rate`, `inflation U.S.`, …)  
 2) **Row 2** *(optional)*: variable codes  
 3) **Row 3+**: monthly observations  
-First column can be `date` (YYYY-MM or YYYY-MM-DD).
+The first column can be `date` (YYYY-MM or YYYY-MM-DD).
 """)
 
-# --------------------------------------------------------------- Upload ------
+# ------------------ Upload ---------------------------------------------------
 uploaded = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx", "xls"])
 if uploaded is None:
     st.stop()
@@ -105,7 +106,7 @@ try:
         if not HAS_OPENPYXL:
             st.error("`openpyxl` not installed."); st.stop()
         df = pd.read_excel(uploaded, engine="openpyxl", header=0)
-    else:  # xls
+    else:  # .xls
         if not HAS_XLRD:
             st.error("`xlrd` not installed."); st.stop()
         df = pd.read_excel(uploaded, engine="xlrd", header=0)
@@ -113,7 +114,7 @@ except Exception as e:
     st.error(f"Could not read file: {e}")
     st.stop()
 
-# ------------------------------------------------- Optional codes row -------
+# ------------------ Optional codes row ---------------------------------------
 heuristic_codes = detect_probable_codes_row(df, date_col="date" if "date" in df.columns else None)
 use_codes_row = st.checkbox("Row 2 contains variable codes", value=heuristic_codes)
 
@@ -125,39 +126,36 @@ if use_codes_row and len(df) >= 1:
             codes_map[str(c)] = str(codes_series[c])
     df = df.iloc[1:].reset_index(drop=True)
 
-# ------------------------------------ Date handling (permanent YYYY-MM) ------
+# ------------------ Date handling: single clean 'date' column -----------------
 date_candidates = [c for c in df.columns if str(c).strip().lower() in {"date", "month", "period"}]
 date_col = date_candidates[0] if date_candidates else None
 
 if date_col:
-    df.insert(0, "date_raw", df[date_col].astype(str))
     parsed = pd.to_datetime(df[date_col], errors="coerce")
     if parsed.notna().any():
-        df = df.drop(columns=[date_col])
-        # create a permanent YYYY-MM string column and set as index
-        df.insert(0, "date_ym", parsed.dt.strftime("%Y-%m"))
-        df = df.set_index("date_ym").sort_index()
+        # replace with formatted string YYYY-MM
+        df[date_col] = parsed.dt.strftime("%Y-%m")
     else:
-        st.warning("Could not parse dates; keeping raw text only.")
+        st.warning("Could not parse dates; keeping original text.")
+    # ensure the column is exactly named 'date'
+    if date_col != "date":
+        df.rename(columns={date_col: "date"}, inplace=True)
 else:
     st.info("No explicit date column found (expected one of: date, month, period).")
 
-# -------------------------------------------- Numeric coercion --------------
-exclude_cols = {"date_raw"}
-if "date_ym" in df.columns:  # index is date_ym, but also keep any duplicate column
-    exclude_cols.add("date_ym")
-df = coerce_numeric_columns(df, exclude=exclude_cols)
+# ------------------ Numeric coercion -----------------------------------------
+df = coerce_numeric_columns(df, exclude={"date"})
 
-# -------------------------------------------------- Preview ------------------
+# ------------------ Preview ---------------------------------------------------
 st.write("Preview (first 6 rows):")
-st.dataframe(df.reset_index().head(6).fillna(""))
+st.dataframe(df.head(6).fillna(""))
 
 if codes_map:
     with st.sidebar.expander("Variable codes (from row 2)"):
         st.write(pd.DataFrame({"variable": list(codes_map.keys()),
                                "code": [codes_map[k] for k in codes_map]}))
 
-# ----------------------------------------- Variable selection ---------------
+# ------------------ Variable selection ---------------------------------------
 numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
 if not numeric_cols:
     st.error("No numeric columns found after parsing.")
@@ -166,11 +164,10 @@ if not numeric_cols:
 target = st.selectbox("Dependent variable (exchange rate)",
                       numeric_cols,
                       index=min(1, len(numeric_cols)-1))
-
 exog_choices = [c for c in numeric_cols if c != target]
 exogs = st.multiselect("Independent variables (optional)", exog_choices, default=[])
 
-# --------------------------------------------- AR lags ----------------------
+# ------------------ AR lags --------------------------------------------------
 ar_lags = st.slider("Number of AR lags on the exchange rate", 0, 12, 0)
 if (not exogs) and ar_lags == 0:
     st.warning("Select at least 1 AR lag when no independent variables are chosen.")
@@ -194,7 +191,7 @@ if HAS_SM:
 else:
     X = add_constant_df(X)
 
-# ------------------------------------------------ Regression -----------------
+# ------------------ Regression -----------------------------------------------
 st.subheader("Regression Results")
 if HAS_SM:
     fit = sm.OLS(Y, X).fit()
@@ -209,7 +206,7 @@ ss_tot = float(np.sum((Y - Y.mean()) ** 2))
 r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
 st.metric("In-sample R²", f"{r2:.4f}")
 
-# -------------------------------- Out-of-sample vs Random Walk --------------
+# ------------------ Out-of-sample vs Random Walk -----------------------------
 st.subheader("Out-of-Sample Forecast Test")
 ratio = st.slider("Training fraction", 0.5, 0.95, 0.8)
 split = int(len(Y) * ratio)
@@ -243,8 +240,9 @@ if np.isfinite(mse_model) and np.isfinite(mse_rw):
 else:
     st.info("Results not comparable due to insufficient or non-finite values.")
 
-# ------------------------------------------------- Chart ---------------------
+# ------------------ Chart ----------------------------------------------------
 chart_df = pd.DataFrame({"Actual": Y_te, "Model": pred, "Random walk": rw})
 chart_df = chart_df.apply(pd.to_numeric, errors="coerce").dropna()
-# index is already YYYY-MM text
+# Keep the 'date' column as a regular column for plotting
+chart_df.index = chart_df.index.astype(str)
 st.line_chart(chart_df)
