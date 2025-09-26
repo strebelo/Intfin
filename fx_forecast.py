@@ -90,6 +90,8 @@ def coerce_numeric_columns(df, date_col="date"):
     for c in df.columns:
         if date_col is not None and c == date_col:
             continue
+        # FIX: normalize Python None to NaN, then coerce to numeric
+        df[c] = df[c].replace({None: np.nan})
         df[c] = pd.to_numeric(df[c], errors="coerce")
     return df
 
@@ -179,8 +181,9 @@ if use_codes_row and len(df) >= 1:
 date_col = "date" if "date" in df.columns else None
 df = coerce_numeric_columns(df, date_col=date_col)
 
+# FIX: show preview without 'None'/'NaN' strings
 st.write("Preview (first 6 rows):")
-st.dataframe(df.head(6))
+st.dataframe(df.head(6).fillna(""))
 
 if codes_map:
     with st.sidebar.expander("Variable codes (from row 2)"):
@@ -209,7 +212,7 @@ if not all_cols:
 target = st.selectbox(
     "Dependent variable (exchange rate)",
     all_cols,
-    index=1  # preselect the 3rd element of all_cols
+    index=min(1, len(all_cols)-1)  # robust if only one column
 )
 exog_choices = [c for c in all_cols if c != target]
 
@@ -227,13 +230,17 @@ if (not exogs) and ar_lags == 0:
     st.warning("Select at least 1 AR lag when no independent variables are chosen.")
     st.stop()
 
-Y = df[target].astype(float)
-X_exog = df[exogs].astype(float) if exogs else pd.DataFrame(index=df.index)
+# FIX: ensure strictly numeric Series/DataFrame (no None objects)
+Y = pd.to_numeric(df[target], errors="coerce").astype(float)
+X_exog = pd.DataFrame(index=df.index)
+if exogs:
+    X_exog = df[exogs].apply(pd.to_numeric, errors="coerce").astype(float)
+
 X_ar = make_target_lags(Y, ar_lags, name=target)
 X = pd.concat([X_exog, X_ar], axis=1)
 
-# Align and drop NaNs introduced by lags
-data = pd.concat([Y.rename(target), X], axis=1).dropna()
+# Align and drop NaNs introduced by lags (and any non-numeric leftovers)
+data = pd.concat([Y.rename(target), X], axis=1).replace({None: np.nan}).dropna()
 if data.empty:
     st.error("After adding AR lags and dropping NaNs, no rows remain. Try fewer lags or check data.")
     st.stop()
@@ -262,7 +269,7 @@ else:
     st.text(fit.text_summary())
 
 # In-sample R^2
-yhat_in = pd.Series(fit.predict(X), index=Y.index)
+yhat_in = pd.Series(fit.predict(X), index=Y.index, dtype=float)
 ss_res = float(np.sum((Y - yhat_in) ** 2))
 ss_tot = float(np.sum((Y - Y.mean()) ** 2))
 r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
@@ -281,10 +288,10 @@ if HAS_SM:
 else:
     fit_oos = np_ols_fit(Y_tr, X_tr)
 
-pred = pd.Series(fit_oos.predict(X_te), index=X_te.index)
-rw = Y.shift(1).iloc[split:]
+pred = pd.Series(fit_oos.predict(X_te), index=X_te.index, dtype=float)
+rw = Y.shift(1).iloc[split:].astype(float)
 
-# Align to the same index
+# Align to the same index and ensure numeric
 pred, Y_te = pred.align(Y_te, join="inner")
 rw, Y_te = rw.align(Y_te, join="inner")
 
@@ -311,7 +318,9 @@ else:
     st.info("Results not comparable due to insufficient or non-finite values.")
 
 # ---- Chart ----
-chart_df = pd.DataFrame({"Actual": Y_te, "Model": pred, "Random walk": rw}).dropna()
+chart_df = pd.DataFrame({"Actual": Y_te, "Model": pred, "Random walk": rw})
+# FIX: harden chart data: enforce numeric and drop any non-finite rows so 'None' never appears
+chart_df = chart_df.apply(pd.to_numeric, errors="coerce").replace({None: np.nan}).dropna(how="any")
 st.line_chart(chart_df)
 
 # ---- Footer: show missing non-core deps so you can fix requirements.txt ----
