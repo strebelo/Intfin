@@ -1,8 +1,3 @@
-# fx_forecast.py
-# Robust FX forecasting app with optional second-row "codes".
-# Student controls AR lags on the exchange rate; exogenous variables enter contemporaneously (optional).
-# The app now immediately reveals whether the random walk performs better (no button).
-
 import streamlit as st
 
 missing = []
@@ -36,14 +31,12 @@ except Exception:
 st.set_page_config(page_title="FX Forecast", layout="wide")
 st.title("Exchange-Rate Forecasting App")
 
-core_missing = [m for m in missing if m in ("pandas", "numpy")]
-if core_missing:
-    st.error("Missing required packages: " + ", ".join(core_missing))
+if any(m in ("pandas", "numpy") for m in missing):
+    st.error("Missing required packages: " + ", ".join(missing))
     st.stop()
 
-# ---------- Utilities ---------------------------------------------------------
+# ---------------------------------------------------------------- Utilities ---
 def add_constant_df(Xdf):
-    Xdf = pd.DataFrame(Xdf).copy()
     if "const" not in Xdf.columns:
         Xdf.insert(0, "const", 1.0)
     return Xdf
@@ -57,10 +50,7 @@ class SimpleOLSResult:
         return X.values @ self.params.values
 
     def text_summary(self):
-        return (
-            "Simple OLS (NumPy fallback)\n" +
-            "\n".join(f"{k}: {v:.6g}" for k, v in self.params.items())
-        )
+        return "\n".join(f"{k}: {v:.6g}" for k, v in self.params.items())
 
 def np_ols_fit(y, X_df):
     X = X_df.values
@@ -69,7 +59,6 @@ def np_ols_fit(y, X_df):
     return SimpleOLSResult(beta, X_df.columns)
 
 def coerce_numeric_columns(df, exclude=None):
-    """Coerce all columns to numeric except those in `exclude`."""
     exclude = set([] if exclude is None else exclude)
     for c in df.columns:
         if c in exclude:
@@ -82,8 +71,6 @@ def detect_probable_codes_row(df, date_col="date"):
     if df.empty:
         return False
     non_date_cols = [c for c in df.columns if c != date_col]
-    if not non_date_cols:
-        return False
     row0 = df.iloc[0]
     nonnum = sum(
         1 for c in non_date_cols
@@ -96,16 +83,16 @@ def make_target_lags(series, L, name):
         return pd.DataFrame(index=series.index)
     return pd.concat({f"{name}_lag{l}": series.shift(l) for l in range(1, L + 1)}, axis=1)
 
-# ---------- Instructions ------------------------------------------------------
+# ------------------------------------------------------------ Instructions ---
 st.write("""
 **File format (monthly):**
-1) **Row 1**: variable names (e.g., `date`, `spot`, `cpi_us`, `cpi_uk`, …)
-2) **Row 2** *(optional)*: variable codes
-3) **Row 3+**: monthly observations
-The first column can be `date` (YYYY-MM or YYYY-MM-DD).
+1) **Row 1**: variable names (e.g., `date`, `spot`, `cpi_us`, …)  
+2) **Row 2** *(optional)*: variable codes  
+3) **Row 3+**: monthly observations  
+First column can be `date` (YYYY-MM or YYYY-MM-DD).
 """)
 
-# ---------- Upload ------------------------------------------------------------
+# --------------------------------------------------------------- Upload ------
 uploaded = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx", "xls"])
 if uploaded is None:
     st.stop()
@@ -126,7 +113,7 @@ except Exception as e:
     st.error(f"Could not read file: {e}")
     st.stop()
 
-# ---------- Optional codes row -----------------------------------------------
+# ------------------------------------------------- Optional codes row -------
 heuristic_codes = detect_probable_codes_row(df, date_col="date" if "date" in df.columns else None)
 use_codes_row = st.checkbox("Row 2 contains variable codes", value=heuristic_codes)
 
@@ -138,7 +125,7 @@ if use_codes_row and len(df) >= 1:
             codes_map[str(c)] = str(codes_series[c])
     df = df.iloc[1:].reset_index(drop=True)
 
-# ---------- Date handling (always keep) ---------------------------------------
+# ------------------------------------ Date handling (permanent YYYY-MM) ------
 date_candidates = [c for c in df.columns if str(c).strip().lower() in {"date", "month", "period"}]
 date_col = date_candidates[0] if date_candidates else None
 
@@ -147,20 +134,21 @@ if date_col:
     parsed = pd.to_datetime(df[date_col], errors="coerce")
     if parsed.notna().any():
         df = df.drop(columns=[date_col])
-        df.insert(0, "date", parsed)
-        df = df.set_index("date").sort_index()
+        # create a permanent YYYY-MM string column and set as index
+        df.insert(0, "date_ym", parsed.dt.strftime("%Y-%m"))
+        df = df.set_index("date_ym").sort_index()
     else:
         st.warning("Could not parse dates; keeping raw text only.")
 else:
     st.info("No explicit date column found (expected one of: date, month, period).")
 
-# ---------- Numeric coercion --------------------------------------------------
+# -------------------------------------------- Numeric coercion --------------
 exclude_cols = {"date_raw"}
-if "date" in df.columns:
-    exclude_cols.add("date")
+if "date_ym" in df.columns:  # index is date_ym, but also keep any duplicate column
+    exclude_cols.add("date_ym")
 df = coerce_numeric_columns(df, exclude=exclude_cols)
 
-# ---------- Preview -----------------------------------------------------------
+# -------------------------------------------------- Preview ------------------
 st.write("Preview (first 6 rows):")
 st.dataframe(df.reset_index().head(6).fillna(""))
 
@@ -169,7 +157,7 @@ if codes_map:
         st.write(pd.DataFrame({"variable": list(codes_map.keys()),
                                "code": [codes_map[k] for k in codes_map]}))
 
-# ---------- Variable selection ------------------------------------------------
+# ----------------------------------------- Variable selection ---------------
 numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
 if not numeric_cols:
     st.error("No numeric columns found after parsing.")
@@ -182,7 +170,7 @@ target = st.selectbox("Dependent variable (exchange rate)",
 exog_choices = [c for c in numeric_cols if c != target]
 exogs = st.multiselect("Independent variables (optional)", exog_choices, default=[])
 
-# ---------- AR lags -----------------------------------------------------------
+# --------------------------------------------- AR lags ----------------------
 ar_lags = st.slider("Number of AR lags on the exchange rate", 0, 12, 0)
 if (not exogs) and ar_lags == 0:
     st.warning("Select at least 1 AR lag when no independent variables are chosen.")
@@ -206,7 +194,7 @@ if HAS_SM:
 else:
     X = add_constant_df(X)
 
-# ---------- Regression --------------------------------------------------------
+# ------------------------------------------------ Regression -----------------
 st.subheader("Regression Results")
 if HAS_SM:
     fit = sm.OLS(Y, X).fit()
@@ -221,7 +209,7 @@ ss_tot = float(np.sum((Y - Y.mean()) ** 2))
 r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
 st.metric("In-sample R²", f"{r2:.4f}")
 
-# ---------- OOS vs Random Walk -----------------------------------------------
+# -------------------------------- Out-of-sample vs Random Walk --------------
 st.subheader("Out-of-Sample Forecast Test")
 ratio = st.slider("Training fraction", 0.5, 0.95, 0.8)
 split = int(len(Y) * ratio)
@@ -255,7 +243,8 @@ if np.isfinite(mse_model) and np.isfinite(mse_rw):
 else:
     st.info("Results not comparable due to insufficient or non-finite values.")
 
-# ---------- Chart -------------------------------------------------------------
+# ------------------------------------------------- Chart ---------------------
 chart_df = pd.DataFrame({"Actual": Y_te, "Model": pred, "Random walk": rw})
 chart_df = chart_df.apply(pd.to_numeric, errors="coerce").dropna()
+# index is already YYYY-MM text
 st.line_chart(chart_df)
