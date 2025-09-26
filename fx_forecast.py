@@ -206,8 +206,11 @@ if not all_cols:
     st.error("Your file has no usable columns after parsing.")
     st.stop()
 
-target = st.selectbox("Dependent variable (exchange rate)", all_cols)
-index=2 
+target = st.selectbox(
+    "Dependent variable (exchange rate)",
+    all_cols,
+    index=2  # preselect the 3rd element of all_cols
+)
 exog_choices = [c for c in all_cols if c != target]
 
 exogs = st.multiselect(
