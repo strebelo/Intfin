@@ -216,7 +216,7 @@ exogs = st.multiselect(
 )
 
 # ---- AR lags on the exchange rate only ----
-ar_lags = st.slider("Number of AR lags on the exchange rate", 0, 12, 1)
+ar_lags = st.slider("Number of AR lags on the exchange rate", 0, 12, 0)
 
 # If no exogs are chosen and ar_lags == 0, there's nothing to estimate except a constant.
 if (not exogs) and ar_lags == 0:
