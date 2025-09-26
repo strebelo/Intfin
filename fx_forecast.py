@@ -192,16 +192,18 @@ if codes_map:
 
 # Datetime index if available
 if "date" in df.columns:
-    try:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        if df["date"].notna().any():
-            df = df.set_index("date").sort_index()
-        else:
-            st.warning("Could not parse 'date' — continuing without a datetime index.")
-            df = df.drop(columns=["date"])
-    except Exception:
-        st.warning("Could not parse 'date' — continuing without a datetime index.")
-        df = df.drop(columns=["date"])
+    # Try to parse, but never drop the column entirely
+    parsed = pd.to_datetime(df["date"], errors="coerce")
+    if parsed.notna().any():
+        # keep parsed as index, but also keep original string column for display
+        df.insert(0, "date_raw", df["date"])
+        df = df.drop(columns=["date"])               # remove old name
+        df["date"] = parsed                          # keep parsed
+        df = df.set_index("date").sort_index()
+    else:
+        st.warning("Could not fully parse 'date'. Keeping original text values.")
+        # leave the original text column untouched
+
 
 # ---- Variable selection ----
 all_cols = list(df.columns)
