@@ -208,45 +208,49 @@ ss_tot = float(np.sum((Y - Y.mean()) ** 2))
 r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
 st.metric("In-sample R²", f"{r2:.4f}")
 
+# ======================= Out-of-sample vs Random Walk =======================
 if ENABLE_OUT_OF_SAMPLE:
-   
-# ------------------ Out-of-sample vs Random Walk -----------------------------
-st.subheader("Out-of-Sample Forecast Test")
-ratio = st.slider("Training fraction", 0.5, 0.95, 0.8)
-split = int(len(Y) * ratio)
+    st.subheader("Out-of-Sample Forecast Test")
 
-X_tr, X_te = X.iloc[:split], X.iloc[split:]
-Y_tr, Y_te = Y.iloc[:split], Y.iloc[split:]
+    ratio = st.slider("Training fraction", 0.5, 0.95, 0.8)
+    split = int(len(Y) * ratio)
 
-fit_oos = sm.OLS(Y_tr, X_tr).fit() if HAS_SM else np_ols_fit(Y_tr, X_tr)
-pred = pd.Series(fit_oos.predict(X_te), index=X_te.index, dtype=float)
-rw = Y.shift(1).iloc[split:].astype(float)
+    X_tr, X_te = X.iloc[:split], X.iloc[split:]
+    Y_tr, Y_te = Y.iloc[:split], Y.iloc[split:]
 
-pred, Y_te = pred.align(Y_te, join="inner")
-rw, Y_te = rw.align(Y_te, join="inner")
+    fit_oos = sm.OLS(Y_tr, X_tr).fit() if HAS_SM else np_ols_fit(Y_tr, X_tr)
+    pred = pd.Series(fit_oos.predict(X_te), index=X_te.index, dtype=float)
+    rw = Y.shift(1).iloc[split:].astype(float)
 
-mse_model = float(np.mean((pred - Y_te) ** 2))
-mse_rw = float(np.mean((rw - Y_te) ** 2))
+    pred, Y_te = pred.align(Y_te, join="inner")
+    rw, Y_te  = rw.align(Y_te,  join="inner")
 
-c1, c2 = st.columns(2)
-with c1: st.metric("OOS MSE — Model", f"{mse_model:.6g}")
-with c2: st.metric("OOS MSE — Random Walk", f"{mse_rw:.6g}")
+    mse_model = float(np.mean((pred - Y_te) ** 2))
+    mse_rw    = float(np.mean((rw   - Y_te) ** 2))
 
-if np.isfinite(mse_model) and np.isfinite(mse_rw):
-    if mse_model < mse_rw:
-        imp = (mse_rw - mse_model) / mse_rw * 100 if mse_rw > 0 else np.nan
-        st.success(f"✅ Model beats the random walk (MSE ↓ {imp:.2f}%).")
-    elif mse_model > mse_rw:
-        det = (mse_model - mse_rw) / mse_rw * 100 if mse_rw > 0 else np.nan
-        st.warning(f"⚠️ Random walk performs better (Model MSE ↑ {det:.2f}% vs RW).")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("OOS MSE — Model", f"{mse_model:.6g}")
+    with c2:
+        st.metric("OOS MSE — Random Walk", f"{mse_rw:.6g}")
+
+    if np.isfinite(mse_model) and np.isfinite(mse_rw):
+        if mse_model < mse_rw:
+            imp = (mse_rw - mse_model) / mse_rw * 100 if mse_rw > 0 else np.nan
+            st.success(f"✅ Model beats the random walk (MSE ↓ {imp:.2f}%).")
+        elif mse_model > mse_rw:
+            det = (mse_model - mse_rw) / mse_rw * 100 if mse_rw > 0 else np.nan
+            st.warning(f"⚠️ Random walk performs better (Model MSE ↑ {det:.2f}% vs RW).")
+        else:
+            st.info("⚖️ Tie: same MSE.")
     else:
-        st.info("⚖️ Tie: same MSE.")
-else:
-    st.info("Results not comparable due to insufficient or non-finite values.")
+        st.info("Results not comparable due to insufficient or non-finite values.")
 
-# ------------------ Chart ----------------------------------------------------
-chart_df = pd.DataFrame({"Actual": Y_te, "Model": pred, "Random walk": rw})
-chart_df = chart_df.apply(pd.to_numeric, errors="coerce").dropna()
-# Keep the 'date' column as a regular column for plotting
-chart_df.index = chart_df.index.astype(str)
-st.line_chart(chart_df)
+    # ------------------ Chart ------------------------------------------------
+    chart_df = pd.DataFrame({"Actual": Y_te, "Model": pred, "Random walk": rw})
+    chart_df = chart_df.apply(pd.to_numeric, errors="coerce").dropna()
+    chart_df.index = chart_df.index.astype(str)  # show dates cleanly on x-axis
+    st.line_chart(chart_df)
+else:
+    # Keep a real block under 'else' to avoid IndentationError if you later add/remove lines
+    st.info("Out-of-sample section is currently disabled.")
