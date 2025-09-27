@@ -249,14 +249,14 @@ if ENABLE_OUT_OF_SAMPLE:
 import altair as alt
 import numpy as np
 
-# --- Align the three series as before ---
+# --- Align the three series ---
 common_idx = Y_te.index.intersection(pred.index).intersection(rw.index)
 Y_te_c = pd.to_numeric(Y_te.reindex(common_idx), errors="coerce")
 pred_c = pd.to_numeric(pred.reindex(common_idx), errors="coerce")
 rw_c   = pd.to_numeric(rw.reindex(common_idx),  errors="coerce")
 
 chart_df = pd.DataFrame({
-    "Actual":      Y_te_c,
+    "Data":      Y_te_c,
     "Model":       pred_c,
     "Random walk": rw_c
 }).dropna()
@@ -280,8 +280,15 @@ line = (
        .encode(
            x=alt.X("date:T", title="Date"),
            y=alt.Y("Value:Q", scale=alt.Scale(domain=domain), title="Exchange rate"),
-           color="Series:N",
-           tooltip=["date:T","Series:N","Value:Q"]
+           color=alt.Color(
+               "Series:N",
+               scale=alt.Scale(
+                   domain=["Actual", "Model", "Random walk"],   # categories
+                   range=["black", "#1f77b4", "#ff7f0e"]        # colors in same order
+               ),
+               legend=alt.Legend(title="Series")
+           ),
+           tooltip=["date:T", "Series:N", "Value:Q"]
        )
        .properties(width="container")
        .interactive()
