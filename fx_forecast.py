@@ -1,6 +1,6 @@
 import streamlit as st
 
-ENABLE_OUT_OF_SAMPLE = False   # change to True when you want the program to perform out of sample tests
+ENABLE_OUT_OF_SAMPLE = True   # change to True when you want the program to perform out of sample tests
 
 # ------------------ Safe imports ---------------------------------------------
 missing = []
