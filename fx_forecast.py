@@ -377,6 +377,4 @@ else:
 
     st.altair_chart(chart, use_container_width=True)
 
-else:
-    # OOS section is completely hidden from students
-    pass
+
