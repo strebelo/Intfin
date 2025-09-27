@@ -257,11 +257,24 @@ import altair as alt
 import numpy as np
 import pandas as pd
 
-# --- Align the three series (unchanged) ---
+# --- Align the three series ---
 common_idx = Y_te.index.intersection(pred.index).intersection(rw.index)
-Y_te_c = pd.to_numeric(Y_te.reindex(common_idx), errors="coerce")
-pred_c = pd.to_numeric(pred.reindex(common_idx), errors="coerce")
-rw_c   = pd.to_numeric(rw.reindex(common_idx),  errors="coerce")
+
+# Normalize index -> DatetimeIndex (handles strings, PeriodIndex, etc.)
+def _to_datetime_index(idx):
+    if isinstance(idx, pd.PeriodIndex):
+        return idx.to_timestamp()  # month periods -> month start (or use 'M' for end)
+    try:
+        return pd.to_datetime(idx)
+    except Exception:
+        # If parsing fails (e.g., "YYYY-MM"), coerce with a day
+        return pd.to_datetime(idx.astype(str) + "-01", errors="coerce")
+
+dt_idx = _to_datetime_index(common_idx)
+
+Y_te_c = pd.to_numeric(pd.Series(Y_te.reindex(common_idx).values, index=dt_idx), errors="coerce")
+pred_c = pd.to_numeric(pd.Series(pred.reindex(common_idx).values, index=dt_idx), errors="coerce")
+rw_c   = pd.to_numeric(pd.Series(rw.reindex(common_idx).values,   index=dt_idx), errors="coerce")
 
 chart_df = pd.DataFrame({
     "Actual":      Y_te_c,
@@ -269,59 +282,60 @@ chart_df = pd.DataFrame({
     "Random walk": rw_c
 }).dropna()
 
-if chart_df.empty or chart_df["Actual"].isna().all():
-    st.warning("No valid 'Actual' points to plot after alignment—check index overlap and NaNs.")
+# Guardrails
+if chart_df.empty:
+    st.warning("No overlapping, non-NaN points to plot after alignment.")
 else:
-    # ⚠️ KEEP dates as datetimes for Altair (no .astype(str) here)
-    # If your index isn't datetime yet, coerce it:
-    idx_dt = pd.to_datetime(chart_df.index)
+    nunique_dates = chart_df.index.nunique()
+    if nunique_dates <= 1:
+        st.warning("Only one unique date in the aligned data. Check that your date index is monthly datetimes (not plain strings).")
+    else:
+        # Long form for Altair
+        plot_df = chart_df.copy()
+        plot_df["date"] = plot_df.index  # DatetimeIndex -> column
+        plot_df = plot_df.melt(id_vars="date", var_name="Series", value_name="Value")
 
-    # Long form for Altair
-    plot_df = chart_df.copy()
-    plot_df["date"] = idx_dt
-    plot_df = plot_df.melt(id_vars="date", var_name="Series", value_name="Value")
+        # Tight y-axis
+        vmin, vmax = plot_df["Value"].min(), plot_df["Value"].max()
+        tiny = (vmax - vmin) * 0.01 or 0.01
+        y_domain = [vmin - tiny, vmax + tiny]
 
-    # Tight y-axis
-    vmin, vmax = plot_df["Value"].min(), plot_df["Value"].max()
-    tiny = (vmax - vmin) * 0.01 or 0.01
-    domain = [vmin - tiny, vmax + tiny]
+        # Layers: others + Actual on top (black, thicker)
+        others = plot_df[plot_df["Series"] != "Actual"]
+        actual = plot_df[plot_df["Series"] == "Actual"]
 
-    # Split for layering: others vs Actual
-    others = plot_df[plot_df["Series"] != "Actual"]
-    actual = plot_df[plot_df["Series"] == "Actual"]
+        base_x = alt.X("date:T", title="Date")
+        base_y = alt.Y("Value:Q", scale=alt.Scale(domain=y_domain), title="Exchange rate")
+        base_tt = ["date:T", "Series:N", "Value:Q"]
 
-    base_x = alt.X("date:T", title="Date")
-    base_y = alt.Y("Value:Q", scale=alt.Scale(domain=domain), title="Exchange rate")
-    base_tt = ["date:T", "Series:N", "Value:Q"]
-
-    layer_others = (
-        alt.Chart(others)
-        .mark_line()
-        .encode(
-            x=base_x,
-            y=base_y,
-            color=alt.Color(
-                "Series:N",
-                scale=alt.Scale(
-                    domain=["Model", "Random walk"],
-                    range=["#1f77b4", "#ff7f0e"],
+        layer_others = (
+            alt.Chart(others)
+            .mark_line()
+            .encode(
+                x=base_x,
+                y=base_y,
+                color=alt.Color(
+                    "Series:N",
+                    scale=alt.Scale(
+                        domain=["Model", "Random walk"],
+                        range=["#1f77b4", "#ff7f0e"],
+                    ),
+                    legend=alt.Legend(title="Series"),
                 ),
-                legend=alt.Legend(title="Series"),
-            ),
-            tooltip=base_tt,
+                tooltip=base_tt,
+            )
         )
-    )
 
-    layer_actual = (
-        alt.Chart(actual)
-        .mark_line(color="black")
-        .encode(
-            x=base_x,
-            y=base_y,
-            size=alt.value(3),      # thicker
-            tooltip=base_tt,
+        layer_actual = (
+            alt.Chart(actual)
+            .mark_line(color="black")
+            .encode(
+                x=base_x,
+                y=base_y,
+                size=alt.value(3),
+                tooltip=base_tt,
+            )
         )
-    )
 
-    chart = (layer_others + layer_actual).interactive()
-    st.altair_chart(chart, use_container_width=True)
+        chart = (layer_others + layer_actual).interactive()
+        st.altair_chart(chart, use_container_width=True)
