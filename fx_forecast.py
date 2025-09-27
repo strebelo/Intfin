@@ -256,56 +256,103 @@ if ENABLE_OUT_OF_SAMPLE:
 import altair as alt
 import numpy as np
 import pandas as pd
+import re
 
-# --- Align the three series ---
+# --- Align series as before ---
 common_idx = Y_te.index.intersection(pred.index).intersection(rw.index)
+Y_te_c = pd.to_numeric(Y_te.reindex(common_idx), errors="coerce")
+pred_c = pd.to_numeric(pred.reindex(common_idx), errors="coerce")
+rw_c   = pd.to_numeric(rw.reindex(common_idx),  errors="coerce")
 
-# Normalize index -> DatetimeIndex (handles strings, PeriodIndex, etc.)
-def _to_datetime_index(idx):
+wide = pd.DataFrame({"Actual": Y_te_c, "Model": pred_c, "Random walk": rw_c}).dropna()
+
+def _coerce_datetime(idx: pd.Index) -> pd.DatetimeIndex:
+    """Robust index coercion → DatetimeIndex without accidental Unix-epoch defaults."""
+    # 1) Already datetime-like
+    if isinstance(idx, pd.DatetimeIndex):
+        return idx
+
+    # 2) Periods (e.g., monthly)
     if isinstance(idx, pd.PeriodIndex):
-        return idx.to_timestamp()  # month periods -> month start (or use 'M' for end)
-    try:
-        return pd.to_datetime(idx)
-    except Exception:
-        # If parsing fails (e.g., "YYYY-MM"), coerce with a day
-        return pd.to_datetime(idx.astype(str) + "-01", errors="coerce")
+        return idx.to_timestamp(how="start")
 
-dt_idx = _to_datetime_index(common_idx)
+    # Work with ndarray of strings for pattern checks
+    vals = pd.Index(idx)
 
-Y_te_c = pd.to_numeric(pd.Series(Y_te.reindex(common_idx).values, index=dt_idx), errors="coerce")
-pred_c = pd.to_numeric(pd.Series(pred.reindex(common_idx).values, index=dt_idx), errors="coerce")
-rw_c   = pd.to_numeric(pd.Series(rw.reindex(common_idx).values,   index=dt_idx), errors="coerce")
+    # Helper to check if all match a regex
+    def _all_match(pat):
+        return all(isinstance(x, str) and re.fullmatch(pat, x) for x in vals.astype(str))
 
-chart_df = pd.DataFrame({
-    "Actual":      Y_te_c,
-    "Model":       pred_c,
-    "Random walk": rw_c
-}).dropna()
+    # 3) Strings "YYYY-MM" or "YYYY-MM-DD"
+    if _all_match(r"\d{4}-\d{2}$"):
+        return pd.to_datetime(vals, format="%Y-%m", errors="coerce")
+    if _all_match(r"\d{4}-\d{2}-\d{2}$"):
+        return pd.to_datetime(vals, format="%Y-%m-%d", errors="coerce")
 
-# Guardrails
-if chart_df.empty:
-    st.warning("No overlapping, non-NaN points to plot after alignment.")
+    # 4) Pure integers like 197401 or 19740101 or Excel serial days
+    if np.issubdtype(vals.dtype, np.number):
+        arr = pd.to_numeric(vals, errors="coerce").astype("Int64")
+
+        # Excel serial days (roughly 1930–2099 → ~11000–73000)
+        if arr.notna().all():
+            amin, amax = int(arr.min()), int(arr.max())
+            if 10000 <= amin <= 80000 and 10000 <= amax <= 80000:
+                dt = pd.to_datetime(arr.astype("float"), unit="D", origin="1899-12-30", errors="coerce")
+                if dt.notna().sum() >= len(arr) * 0.9:
+                    return pd.DatetimeIndex(dt)
+
+            # YYYYMM (e.g., 197401)
+            if 190001 <= amin <= 209912 and 190001 <= amax <= 209912:
+                # Convert to string then parse
+                s = arr.astype(str).str.zfill(6)
+                dt = pd.to_datetime(s, format="%Y%m", errors="coerce")
+                if dt.notna().sum() >= len(arr) * 0.9:
+                    return pd.DatetimeIndex(dt)
+
+            # YYYYMMDD (e.g., 19740101)
+            if 19000101 <= amin <= 20991231 and 19000101 <= amax <= 20991231:
+                s = arr.astype(str).str.zfill(8)
+                dt = pd.to_datetime(s, format="%Y%m%d", errors="coerce")
+                if dt.notna().sum() >= len(arr) * 0.9:
+                    return pd.DatetimeIndex(dt)
+
+    # 5) Last resort: strict parse as strings (no epoch units)
+    dt = pd.to_datetime(vals.astype(str), errors="coerce")
+    return pd.DatetimeIndex(dt)
+
+if wide.empty:
+    st.warning("No overlapping non-NaN points to plot after alignment.")
 else:
-    nunique_dates = chart_df.index.nunique()
-    if nunique_dates <= 1:
-        st.warning("Only one unique date in the aligned data. Check that your date index is monthly datetimes (not plain strings).")
+    dt_idx = _coerce_datetime(wide.index)
+
+    # If too many NaT, warn
+    if pd.isna(dt_idx).sum() > 0:
+        st.info(f"Converted dates with {pd.isna(dt_idx).sum()} NaT values; check source date format.")
+
+    # Drop rows with NaT dates
+    good = ~pd.isna(dt_idx)
+    wide = wide.loc[good]
+    dt_idx = dt_idx[good]
+
+    if pd.Index(dt_idx).nunique() <= 1:
+        st.warning("Only one unique date after conversion—verify your date column/index format.")
     else:
         # Long form for Altair
-        plot_df = chart_df.copy()
-        plot_df["date"] = plot_df.index  # DatetimeIndex -> column
+        plot_df = wide.copy()
+        plot_df["date"] = dt_idx
         plot_df = plot_df.melt(id_vars="date", var_name="Series", value_name="Value")
 
         # Tight y-axis
         vmin, vmax = plot_df["Value"].min(), plot_df["Value"].max()
         tiny = (vmax - vmin) * 0.01 or 0.01
-        y_domain = [vmin - tiny, vmax + tiny]
+        ydom = [vmin - tiny, vmax + tiny]
 
-        # Layers: others + Actual on top (black, thicker)
+        # Layers: model + RW, then Actual on top in black
         others = plot_df[plot_df["Series"] != "Actual"]
         actual = plot_df[plot_df["Series"] == "Actual"]
 
         base_x = alt.X("date:T", title="Date")
-        base_y = alt.Y("Value:Q", scale=alt.Scale(domain=y_domain), title="Exchange rate")
+        base_y = alt.Y("Value:Q", scale=alt.Scale(domain=ydom), title="Exchange rate")
         base_tt = ["date:T", "Series:N", "Value:Q"]
 
         layer_others = (
@@ -314,14 +361,10 @@ else:
             .encode(
                 x=base_x,
                 y=base_y,
-                color=alt.Color(
-                    "Series:N",
-                    scale=alt.Scale(
-                        domain=["Model", "Random walk"],
-                        range=["#1f77b4", "#ff7f0e"],
-                    ),
-                    legend=alt.Legend(title="Series"),
-                ),
+                color=alt.Color("Series:N",
+                                scale=alt.Scale(domain=["Model","Random walk"],
+                                                range=["#1f77b4","#ff7f0e"]),
+                                legend=alt.Legend(title="Series")),
                 tooltip=base_tt,
             )
         )
@@ -329,13 +372,7 @@ else:
         layer_actual = (
             alt.Chart(actual)
             .mark_line(color="black")
-            .encode(
-                x=base_x,
-                y=base_y,
-                size=alt.value(3),
-                tooltip=base_tt,
-            )
+            .encode(x=base_x, y=base_y, size=alt.value(3), tooltip=base_tt)
         )
 
-        chart = (layer_others + layer_actual).interactive()
-        st.altair_chart(chart, use_container_width=True)
+        st.altair_chart((layer_others + layer_actual).interactive(), use_container_width=True)
