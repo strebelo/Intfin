@@ -208,7 +208,7 @@ ss_tot = float(np.sum((Y - Y.mean()) ** 2))
 r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
 st.metric("In-sample R²", f"{r2:.4f}")
 
- ======================= Out-of-sample vs Random Walk =======================
+# ======================= Out-of-sample vs Random Walk =======================
 if ENABLE_OUT_OF_SAMPLE:
     st.subheader("Out-of-Sample Forecast Test (log-% errors)")
 
