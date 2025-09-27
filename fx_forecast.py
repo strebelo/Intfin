@@ -281,7 +281,7 @@ with st.expander("Model performance statistics", expanded=False):
         st.write("Coefficients:", fit.params)
 
 # ========================= In-sample performance (chart + R²) ================
-st.subheader("In-sample Performance")
+st.subheader("Model Performance")
 
 # Fit using the full estimation sample
 if HAS_SM:
@@ -297,7 +297,7 @@ else:
     r2_insample = 1 - ss_res / ss_tot
 
 # Show R² metric
-st.metric("In-sample R²", f"{r2_insample:.4f}")
+st.metric("Model R²", f"{r2_insample:.4f}")
 
 # Align for plotting
 wide_is = pd.DataFrame({
