@@ -177,10 +177,45 @@ if not numeric_cols:
 st.write("Preview:", df.head())
 
 # ========================= Controls =========================================
-target = st.selectbox("Dependent variable (exchange rate)", numeric_cols, index=min(1, len(numeric_cols)-1))
-exog_choices = [c for c in numeric_cols if c != target]
-exogs = st.multiselect("Independent variables (optional, contemporaneous)", exog_choices, default=[])
+numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+if not numeric_cols:
+    st.error("No numeric columns found after loading the data.")
+    st.stop()
 
+# Heuristic to pick the spot exchange-rate column as default
+def _default_spot(colnames):
+    # 1) Exact/near-exact matches (strong signals)
+    strong = {"spot", "s", "spot_fx", "spot rate", "exchange rate", "exrate", "fx_spot"}
+    for c in colnames:
+        if c.lower().strip() in strong:
+            return c
+    # 2) Substring matches (weaker signals)
+    for c in colnames:
+        cl = c.lower()
+        if ("spot" in cl) or ("exch" in cl) or ("fx" in cl):
+            return c
+    # 3) Fallback: first numeric column
+    return colnames[0] if colnames else None
+
+spot_col = _default_spot(numeric_cols)
+default_index = numeric_cols.index(spot_col) if spot_col in numeric_cols else 0
+
+# Target = dependent variable (defaults to spot exchange rate if found)
+target = st.selectbox(
+    "Dependent variable (exchange rate)",
+    numeric_cols,
+    index=default_index
+)
+
+# Exogenous choices exclude the target; default empty
+exog_choices = [c for c in numeric_cols if c != target]
+exogs = st.multiselect(
+    "Independent variables (optional, contemporaneous)",
+    exog_choices,
+    default=[]
+)
+
+# AR lags on the dependent variable
 max_lags = st.slider("Number of AR lags on the exchange rate", 1, 12, 1)
 
 # ========================= Build regression data =============================
