@@ -337,55 +337,46 @@ if ENABLE_OUT_OF_SAMPLE:
             else:
                 st.info("Results not comparable due to non-finite values.")
 
-            # ------------- Tight Altair plot: Actual (black) on top -------------
-            plot_df = wide.copy()
-            # Index should already be DatetimeIndex thanks to normalize_date_index
-            if not isinstance(plot_df.index, pd.DatetimeIndex):
-                plot_df.index = pd.to_datetime(plot_df.index, errors="coerce")
+# ------------- Tight Altair plot: include Actual in legend -------------
+plot_df = wide.copy()
+if not isinstance(plot_df.index, pd.DatetimeIndex):
+    plot_df.index = pd.to_datetime(plot_df.index, errors="coerce")
 
-            good = ~pd.isna(plot_df.index)
-            plot_df = plot_df.loc[good]
-            if plot_df.index.nunique() <= 1:
-                st.warning("Only one unique date in OOS window—cannot plot a time series.")
-            else:
-                long_df = plot_df.copy()
-                long_df["date"] = long_df.index
-                long_df = long_df.melt(id_vars="date", var_name="Series", value_name="Value")
+good = ~pd.isna(plot_df.index)
+plot_df = plot_df.loc[good]
+if plot_df.index.nunique() <= 1:
+    st.warning("Only one unique date in OOS window—cannot plot a time series.")
+else:
+    long_df = plot_df.copy()
+    long_df["date"] = long_df.index
+    long_df = long_df.melt(id_vars="date", var_name="Series", value_name="Value")
 
-                # Tight y-range
-                vmin, vmax = long_df["Value"].min(), long_df["Value"].max()
-                tiny = (vmax - vmin) * 0.01 or 0.01
-                ydom = [vmin - tiny, vmax + tiny]
+    # Tight y-range
+    vmin, vmax = long_df["Value"].min(), long_df["Value"].max()
+    tiny = (vmax - vmin) * 0.01 or 0.01
+    ydom = [vmin - tiny, vmax + tiny]
 
-                others = long_df[long_df["Series"] != "Actual"]
-                actual = long_df[long_df["Series"] == "Actual"]
+    # Give Actual a fixed color but still show it in the legend
+    color_scale = alt.Scale(
+        domain=["Actual", "Model", "Random walk"],
+        range=["black", "#1f77b4", "#ff7f0e"]
+    )
 
-                base_x = alt.X("date:T", title="Date")
-                base_y = alt.Y("Value:Q", scale=alt.Scale(domain=ydom), title="Exchange rate")
-                base_tt = ["date:T", "Series:N", "Value:Q"]
+    chart = (
+        alt.Chart(long_df)
+        .mark_line()
+        .encode(
+            x=alt.X("date:T", title="Date"),
+            y=alt.Y("Value:Q", scale=alt.Scale(domain=ydom), title="Exchange rate"),
+            color=alt.Color("Series:N", scale=color_scale, legend=alt.Legend(title="Series")),
+            size=alt.condition("datum.Series == 'Actual'", alt.value(3), alt.value(1.5)),
+            tooltip=["date:T", "Series:N", "Value:Q"]
+        )
+        .interactive()
+    )
 
-                layer_others = (
-                    alt.Chart(others)
-                    .mark_line()
-                    .encode(
-                        x=base_x,
-                        y=base_y,
-                        color=alt.Color(
-                            "Series:N",
-                            scale=alt.Scale(domain=["Model", "Random walk"], range=["#1f77b4", "#ff7f0e"]),
-                            legend=alt.Legend(title="Series"),
-                        ),
-                        tooltip=base_tt,
-                    )
-                )
+    st.altair_chart(chart, use_container_width=True)
 
-                layer_actual = (
-                    alt.Chart(actual)
-                    .mark_line(color="black")
-                    .encode(x=base_x, y=base_y, size=alt.value(3), tooltip=base_tt)
-                )
-
-                st.altair_chart((layer_others + layer_actual).interactive(), use_container_width=True)
 else:
     # OOS section is completely hidden from students
     pass
