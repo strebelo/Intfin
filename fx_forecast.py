@@ -255,8 +255,9 @@ if ENABLE_OUT_OF_SAMPLE:
 
 import altair as alt
 import numpy as np
+import pandas as pd
 
-# --- Align & build chart_df ---
+# --- Align the three series (unchanged) ---
 common_idx = Y_te.index.intersection(pred.index).intersection(rw.index)
 Y_te_c = pd.to_numeric(Y_te.reindex(common_idx), errors="coerce")
 pred_c = pd.to_numeric(pred.reindex(common_idx), errors="coerce")
@@ -268,48 +269,59 @@ chart_df = pd.DataFrame({
     "Random walk": rw_c
 }).dropna()
 
-# If everything vanished, stop early with a hint
 if chart_df.empty or chart_df["Actual"].isna().all():
     st.warning("No valid 'Actual' points to plot after alignment—check index overlap and NaNs.")
 else:
-    chart_df.index = chart_df.index.astype(str)
+    # ⚠️ KEEP dates as datetimes for Altair (no .astype(str) here)
+    # If your index isn't datetime yet, coerce it:
+    idx_dt = pd.to_datetime(chart_df.index)
 
-    # Long form
-    plot_df = chart_df.reset_index(names="date").melt(
-        "date", var_name="Series", value_name="Value"
-    )
+    # Long form for Altair
+    plot_df = chart_df.copy()
+    plot_df["date"] = idx_dt
+    plot_df = plot_df.melt(id_vars="date", var_name="Series", value_name="Value")
 
-    # Sanity check (optional while debugging)
-    # st.write("Series present:", plot_df["Series"].unique().tolist())
-
-    # Tight y-range
-    vmin, vmax = chart_df.min().min(), chart_df.max().max()
+    # Tight y-axis
+    vmin, vmax = plot_df["Value"].min(), plot_df["Value"].max()
     tiny = (vmax - vmin) * 0.01 or 0.01
     domain = [vmin - tiny, vmax + tiny]
 
-    # Split layers: others (colored) + Actual (black, thicker, on top)
+    # Split for layering: others vs Actual
     others = plot_df[plot_df["Series"] != "Actual"]
     actual = plot_df[plot_df["Series"] == "Actual"]
 
-    base_enc = dict(
-        x=alt.X("date:T", title="Date"),
-        y=alt.Y("Value:Q", scale=alt.Scale(domain=domain), title="Exchange rate"),
-        tooltip=["date:T", "Series:N", "Value:Q"]
+    base_x = alt.X("date:T", title="Date")
+    base_y = alt.Y("Value:Q", scale=alt.Scale(domain=domain), title="Exchange rate")
+    base_tt = ["date:T", "Series:N", "Value:Q"]
+
+    layer_others = (
+        alt.Chart(others)
+        .mark_line()
+        .encode(
+            x=base_x,
+            y=base_y,
+            color=alt.Color(
+                "Series:N",
+                scale=alt.Scale(
+                    domain=["Model", "Random walk"],
+                    range=["#1f77b4", "#ff7f0e"],
+                ),
+                legend=alt.Legend(title="Series"),
+            ),
+            tooltip=base_tt,
+        )
     )
 
-    layer_others = alt.Chart(others).mark_line().encode(
-        **base_enc,
-        color=alt.Color("Series:N",
-                        scale=alt.Scale(
-                            domain=["Model", "Random walk"],
-                            range=["#1f77b4", "#ff7f0e"]),
-                        legend=alt.Legend(title="Series"))
+    layer_actual = (
+        alt.Chart(actual)
+        .mark_line(color="black")
+        .encode(
+            x=base_x,
+            y=base_y,
+            size=alt.value(3),      # thicker
+            tooltip=base_tt,
+        )
     )
 
-    layer_actual = alt.Chart(actual).mark_line(color="black", strokeWidth=3).encode(
-        **base_enc
-    ).properties(zindex=10)  # draw on top
-
-    chart = (layer_others + layer_actual).resolve_scale(color="independent").interactive()
-
+    chart = (layer_others + layer_actual).interactive()
     st.altair_chart(chart, use_container_width=True)
