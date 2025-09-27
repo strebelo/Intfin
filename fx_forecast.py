@@ -246,9 +246,28 @@ if ENABLE_OUT_OF_SAMPLE:
     else:
         st.info("Results not comparable due to insufficient or non-finite values.")
 
-    # ------------------ Chart ------------------------------------------------
-    chart_df = pd.DataFrame({"Actual": Y_te, "Model": pred, "Random walk": rw})
-    chart_df = chart_df.apply(pd.to_numeric, errors="coerce").dropna()
-    chart_df.index = chart_df.index.astype(str)  # show dates cleanly on x-axis
-    st.line_chart(chart_df)
+  # ------------------ Chart (robust 3-line plot) ------------------------------
+# 1) Align all three series to a common index
+common_idx = Y_te.index.intersection(pred.index).intersection(rw.index)
+Y_te_c   = pd.to_numeric(Y_te.reindex(common_idx), errors="coerce")
+pred_c   = pd.to_numeric(pred.reindex(common_idx), errors="coerce")
+rw_c     = pd.to_numeric(rw.reindex(common_idx), errors="coerce")
+
+# 2) Build a clean, wide dataframe
+chart_df = pd.DataFrame({
+    "Actual":       Y_te_c,
+    "Model":        pred_c,
+    "Random walk":  rw_c
+}).dropna()
+
+# 3) Make the x-axis readable in Streamlit
+chart_df.index = chart_df.index.astype(str)
+
+# 4) Optional sanity check (uncomment while debugging)
+# st.write("Row counts:", len(Y_te_c), len(pred_c), len(rw_c), "after dropna:", len(chart_df))
+# st.dataframe(chart_df.head())
+
+# 5) Plot — wide format shows three lines
+st.line_chart(chart_df)
+
 
