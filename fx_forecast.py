@@ -138,7 +138,7 @@ def normalize_date_index(df: pd.DataFrame, prefer_col: Optional[str] = None) -> 
 
 # ============================== UI ==========================================
 st.title("Forecasting spot exchange rates")
-st.caption("Dates are normalized automatically. OOS block uses log-% MSE and is hidden by default.")
+# st.caption("Dates are normalized automatically. OOS block uses log-% MSE and is hidden by default.")
 
 uploaded = st.file_uploader(
     "Upload data (CSV or Excel). Must include a 'date' column or a date-like index/column.",
