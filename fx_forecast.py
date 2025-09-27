@@ -246,28 +246,45 @@ if ENABLE_OUT_OF_SAMPLE:
     else:
         st.info("Results not comparable due to insufficient or non-finite values.")
 
-  # ------------------ Chart (robust 3-line plot) ------------------------------
-# 1) Align all three series to a common index
+import altair as alt
+import numpy as np
+
+# --- Align the three series as before ---
 common_idx = Y_te.index.intersection(pred.index).intersection(rw.index)
-Y_te_c   = pd.to_numeric(Y_te.reindex(common_idx), errors="coerce")
-pred_c   = pd.to_numeric(pred.reindex(common_idx), errors="coerce")
-rw_c     = pd.to_numeric(rw.reindex(common_idx), errors="coerce")
+Y_te_c = pd.to_numeric(Y_te.reindex(common_idx), errors="coerce")
+pred_c = pd.to_numeric(pred.reindex(common_idx), errors="coerce")
+rw_c   = pd.to_numeric(rw.reindex(common_idx),  errors="coerce")
 
-# 2) Build a clean, wide dataframe
 chart_df = pd.DataFrame({
-    "Actual":       Y_te_c,
-    "Model":        pred_c,
-    "Random walk":  rw_c
+    "Actual":      Y_te_c,
+    "Model":       pred_c,
+    "Random walk": rw_c
 }).dropna()
-
-# 3) Make the x-axis readable in Streamlit
 chart_df.index = chart_df.index.astype(str)
 
-# 4) Optional sanity check (uncomment while debugging)
-# st.write("Row counts:", len(Y_te_c), len(pred_c), len(rw_c), "after dropna:", len(chart_df))
-# st.dataframe(chart_df.head())
+# --- Compute tight vertical range ---
+vmin = chart_df.min().min()
+vmax = chart_df.max().max()
+tiny = (vmax - vmin) * 0.01 or 0.01  # 1 % of range or 0.01 if flat
+domain = [vmin - tiny, vmax + tiny]
 
-# 5) Plot — wide format shows three lines
-st.line_chart(chart_df)
+# --- Prepare long form for Altair ---
+plot_df = chart_df.reset_index(names="date").melt(
+    "date", var_name="Series", value_name="Value"
+)
 
+# --- Altair chart with fixed y-domain ---
+line = (
+    alt.Chart(plot_df)
+       .mark_line()
+       .encode(
+           x=alt.X("date:T", title="Date"),
+           y=alt.Y("Value:Q", scale=alt.Scale(domain=domain), title="Exchange rate"),
+           color="Series:N",
+           tooltip=["date:T","Series:N","Value:Q"]
+       )
+       .properties(width="container")
+       .interactive()
+)
 
+st.altair_chart(line, use_container_width=True)
