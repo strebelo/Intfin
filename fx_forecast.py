@@ -130,7 +130,8 @@ def normalize_date_index(df: pd.DataFrame, prefer_col: Optional[str] = None) -> 
 
     n_nat = int(pd.isna(dt).sum())
     if n_nat > 0:
-      #  st.info(f"Date normalization: dropping {n_nat} rows with unparseable dates from '{cand}'.")
+       # st.info(f"Date normalization: dropping {n_nat} rows with unparseable dates from '{cand}'.")
+        pass
     df = df.loc[~pd.isna(dt)].copy()
     df.index = pd.DatetimeIndex(dt[~pd.isna(dt)])
     df = df.drop(columns=[cand], errors="ignore")
