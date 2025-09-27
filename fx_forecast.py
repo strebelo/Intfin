@@ -1,8 +1,9 @@
 # fx_forecast.py
 # Robust FX forecasting app with optional out-of-sample section (hidden by default).
 # - Normalizes date index on load (handles strings, PeriodIndex, Excel serials, YYYYMM, etc.)
-# - Students can choose target, AR lags, and contemporaneous exogenous variables
-# - Out-of-sample block computes MSE using log-% errors: 100 * ln(Forecast / Actual)
+# - Coerces string-like numeric columns to numeric
+# - Default dependent var = spot exchange rate (smart heuristics)
+# - Out-of-sample block uses log-% MSE: 100 * ln(Forecast / Actual)
 # - Tight Altair plot with Actual in black, on top
 
 import streamlit as st
@@ -10,12 +11,13 @@ import pandas as pd
 import numpy as np
 import altair as alt
 import re
+from typing import Optional
 
 # ========================== Instructor switch ===============================
 # Set to True when you want to reveal the Out-of-Sample block
 ENABLE_OUT_OF_SAMPLE = False
 
-# Optional: uncomment to use a sidebar code to toggle the OOS section
+# Optional: sidebar code to toggle (uncomment to use)
 # code = st.sidebar.text_input("Instructor code", type="password", placeholder="••••")
 # ENABLE_OUT_OF_SAMPLE = ENABLE_OUT_OF_SAMPLE or (code == "reveal-oos")
 
@@ -30,11 +32,10 @@ def add_constant_df(X: pd.DataFrame) -> pd.DataFrame:
     """Add intercept column consistently for both numpy and statsmodels paths."""
     if HAS_SM:
         return sm.add_constant(X, has_constant="add")
-    else:
-        Xc = X.copy()
-        if "const" not in Xc.columns:
-            Xc.insert(0, "const", 1.0)
-        return Xc
+    Xc = X.copy()
+    if "const" not in Xc.columns:
+        Xc.insert(0, "const", 1.0)
+    return Xc
 
 def np_ols_fit(y: pd.Series, X: pd.DataFrame):
     """Simple OLS via numpy for environments without statsmodels."""
@@ -48,12 +49,12 @@ def np_ols_fit(y: pd.Series, X: pd.DataFrame):
     return Result()
 
 # ======================== Date normalization ================================
-def normalize_date_index(df: pd.DataFrame, prefer_col: str | None = None) -> pd.DataFrame:
+def normalize_date_index(df: pd.DataFrame, prefer_col: Optional[str] = None) -> pd.DataFrame:
     """
     Make df.index a clean DatetimeIndex.
-    - Picks a date column (case-insensitive 'date' if present, or prefer_col)
-    - Handles strings 'YYYY-MM' / 'YYYY-MM-DD', integers like 197401/19740101, Excel serial days, PeriodIndex
-    - Sorts by date and drops rows with NaT dates (reports how many)
+    - Chooses a date column (case-insensitive 'date' or 'prefer_col'), else tries the index.
+    - Handles strings 'YYYY-MM' / 'YYYY-MM-DD', integers like 197401/19740101, Excel serial days, PeriodIndex.
+    - Sorts by date and drops rows with NaT dates (reports how many).
     """
     df = df.copy()
 
@@ -65,7 +66,7 @@ def normalize_date_index(df: pd.DataFrame, prefer_col: str | None = None) -> pd.
         return df.sort_index()
 
     # Choose candidate date column
-    date_cols_exact = [c for c in df.columns if c.lower() == "date"]
+    date_cols_exact = [c for c in df.columns if str(c).lower() == "date"]
     if prefer_col and prefer_col in df.columns:
         cand = prefer_col
     elif date_cols_exact:
@@ -74,57 +75,52 @@ def normalize_date_index(df: pd.DataFrame, prefer_col: str | None = None) -> pd.
         # Heuristic: if the first column name contains "date"
         cand = df.columns[0] if re.fullmatch(r"(?i).*date.*", str(df.columns[0])) else None
 
-    # If no candidate column, try coercing the index itself
     if cand is None:
+        # Try to coerce the existing index
         try:
             dt = pd.to_datetime(df.index, errors="coerce")
-            n_bad = int(pd.isna(dt).sum())
-            if n_bad < len(df):
-                df.index = dt
-                df = df.loc[~pd.isna(df.index)]
-                return df.sort_index()
+            if pd.isna(dt).all():
+                st.warning("Could not identify a date column; consider passing prefer_col='your_date_col'.")
+                return df
+            df.index = dt
+            df = df.loc[~pd.isna(df.index)]
+            return df.sort_index()
         except Exception:
-            pass
-        st.warning("Could not identify a date column; consider passing prefer_col='your_date_col'.")
-        return df
+            st.warning("Could not identify a date column; consider passing prefer_col='your_date_col'.")
+            return df
 
     s = df[cand]
 
-    # Try broad parse first
+    # Broad parse first
     dt = pd.to_datetime(s, errors="coerce")
-    share_nat = float(pd.isna(dt).mean())
 
-    # If many NaT, try specific patterns and numeric cases
-    if share_nat > 0.2:
-        s_num = pd.to_numeric(s, errors="ignore")
-
-        # Excel serial days
-        s_num2 = pd.to_numeric(s, errors="coerce")
-        if s_num2.notna().mean() > 0.8:
-            arr = s_num2.astype("Int64")
+    # If many NaT, try specific numeric/string formats
+    if dt.isna().mean() > 0.2:
+        # Numeric possibilities (Excel serial / YYYYMM / YYYYMMDD)
+        s_num = pd.to_numeric(s, errors="coerce")
+        if s_num.notna().mean() > 0.8:
+            arr = s_num.astype("Int64")
             if arr.notna().all():
                 amin, amax = int(arr.min()), int(arr.max())
-                # Typical Excel serial range (rough)
+                # Excel serial days (rough range)
                 if 10000 <= amin <= 80000 and 10000 <= amax <= 80000:
                     dt_try = pd.to_datetime(arr.astype("float"), unit="D", origin="1899-12-30", errors="coerce")
                     if dt_try.notna().sum() >= 0.8 * len(arr):
                         dt = dt_try
+                # YYYYMM
+                if dt.isna().mean() > 0.2:
+                    s6 = arr.astype(str).str.zfill(6)
+                    dt_try = pd.to_datetime(s6, format="%Y%m", errors="coerce")
+                    if dt_try.notna().sum() >= 0.8 * len(arr):
+                        dt = dt_try
+                # YYYYMMDD
+                if dt.isna().mean() > 0.2:
+                    s8 = arr.astype(str).str.zfill(8)
+                    dt_try = pd.to_datetime(s8, format="%Y%m%d", errors="coerce")
+                    if dt_try.notna().sum() >= 0.8 * len(arr):
+                        dt = dt_try
 
-            # YYYYMM (e.g., 197401)
-            if dt.isna().mean() > 0.2:
-                s6 = arr.astype(str).str.zfill(6)
-                dt_try = pd.to_datetime(s6, format="%Y%m", errors="coerce")
-                if dt_try.notna().sum() >= 0.8 * len(arr):
-                    dt = dt_try
-
-            # YYYYMMDD (e.g., 19740101)
-            if dt.isna().mean() > 0.2:
-                s8 = arr.astype(str).str.zfill(8)
-                dt_try = pd.to_datetime(s8, format="%Y%m%d", errors="coerce")
-                if dt_try.notna().sum() >= 0.8 * len(arr):
-                    dt = dt_try
-
-        # Strings YYYY-MM only
+        # Strings like YYYY-MM (no day)
         if dt.isna().mean() > 0.2:
             s_str = s.astype(str)
             if s_str.str.match(r"^\d{4}-\d{2}$").mean() > 0.5:
@@ -137,7 +133,6 @@ def normalize_date_index(df: pd.DataFrame, prefer_col: str | None = None) -> pd.
         st.info(f"Date normalization: dropping {n_nat} rows with unparseable dates from '{cand}'.")
     df = df.loc[~pd.isna(dt)].copy()
     df.index = pd.DatetimeIndex(dt[~pd.isna(dt)])
-    # keep the original date col if you want; otherwise remove:
     df = df.drop(columns=[cand], errors="ignore")
     return df.sort_index()
 
@@ -145,7 +140,10 @@ def normalize_date_index(df: pd.DataFrame, prefer_col: str | None = None) -> pd.
 st.title("FX Forecast (AR lags + optional contemporaneous exogenous)")
 st.caption("Dates are normalized automatically. OOS block uses log-% MSE and is hidden by default.")
 
-uploaded = st.file_uploader("Upload data (CSV or Excel). Must include a 'date' column or a date-like index/column.", type=["csv", "xlsx", "xls"])
+uploaded = st.file_uploader(
+    "Upload data (CSV or Excel). Must include a 'date' column or a date-like index/column.",
+    type=["csv", "xlsx", "xls"]
+)
 
 if uploaded is None:
     st.info("Please upload a CSV/Excel file to begin.")
@@ -161,26 +159,87 @@ except Exception as e:
     st.error(f"Could not read file: {e}")
     st.stop()
 
-# Normalize dates
+# Normalize dates once
 df = normalize_date_index(raw_df, prefer_col="date")
-
 if df.empty:
     st.error("Dataframe is empty after date normalization.")
     st.stop()
 
-# Keep only numeric columns for modeling
-numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-if not numeric_cols:
-    st.error("No numeric columns found after loading the data.")
+# ========================= Coerce + choose columns ===========================
+# Try to coerce non-numeric columns into numeric (remove commas/thin spaces)
+for c in df.columns:
+    if pd.api.types.is_numeric_dtype(df[c]):
+        continue
+    s = (
+        df[c].astype(str)
+        .str.replace(",", "", regex=False)
+        .str.replace("\u2009", "", regex=False)  # thin space
+        .str.strip()
+    )
+    s_num = pd.to_numeric(s, errors="coerce")
+    if s_num.notna().mean() >= 0.80:
+        df[c] = s_num
+
+candidate_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+if not candidate_cols:
+    st.error("No numeric columns found after loading/coercing the data.")
     st.stop()
 
 st.write("Preview:", df.head())
 
-# ========================= Controls =========================================
-target = st.selectbox("Dependent variable (exchange rate)", numeric_cols, index=min(1, len(numeric_cols)-1))
-exog_choices = [c for c in numeric_cols if c != target]
-exogs = st.multiselect("Independent variables (optional, contemporaneous)", exog_choices, default=[])
+# ========================= Controls (spot default) ===========================
+def _score_as_spot(name: str) -> int:
+    """Higher score => more likely to be a spot FX series (deprioritize policy rates)."""
+    n = name.lower().strip()
 
+    # hard demotions: bank/policy rates, yields, typical macro
+    if any(bad in n for bad in ["bank rate", "boe", "policy", "base rate", "yield", "cpi", "ppi"]):
+        return -5
+
+    score = 0
+    # strong exact-ish names
+    if n in {"spot", "s", "spot_fx", "spot rate", "exchange rate", "exrate", "fx_spot", "s_fx"}:
+        score += 8
+
+    # keywords suggesting FX spot
+    if "spot" in n:  score += 5
+    if "fx" in n:    score += 3
+    if "exch" in n:  score += 3
+    if "rate" in n:  score += 1  # mild
+
+    # currency pair patterns: EURUSD, USD/EUR, GBP-USD, etc.
+    if re.search(r"\b[A-Z]{3}[/\- ]?[A-Z]{3}\b", name):
+        score += 6
+    if re.fullmatch(r"[A-Z]{6}", name):  # e.g., EURUSD
+        score += 5
+
+    # common currency tokens
+    for kw in ["usd", "eur", "gbp", "jpy", "chf", "aud", "cad", "nzd", "brl", "mxn", "cny", "hkd", "sgd"]:
+        if kw in n:
+            score += 2
+    return score
+
+# Choose default spot column by score; fall back to first numeric
+scored = sorted(((c, _score_as_spot(str(c))) for c in candidate_cols), key=lambda x: x[1], reverse=True)
+spot_col = scored[0][0] if scored else candidate_cols[0]
+default_index = candidate_cols.index(spot_col)
+
+target = st.selectbox(
+    "Dependent variable (exchange rate)",
+    candidate_cols,
+    index=default_index,
+    help="Defaults to the most likely spot exchange-rate series."
+)
+
+# Exogenous choices exclude the target; default empty
+exog_choices = [c for c in candidate_cols if c != target]
+exogs = st.multiselect(
+    "Independent variables (optional, contemporaneous)",
+    exog_choices,
+    default=[]
+)
+
+# AR lags on the dependent variable
 max_lags = st.slider("Number of AR lags on the exchange rate", 1, 12, 1)
 
 # ========================= Build regression data =============================
@@ -208,7 +267,6 @@ X = XY.drop(columns=["Y"])
 
 # ========================= In-sample quick fit (optional) ====================
 with st.expander("In-sample fit (quick look)", expanded=False):
-    # Fit OLS
     if HAS_SM:
         fit = sm.OLS(Y, add_constant_df(X)).fit()
         st.write(fit.summary())
@@ -218,7 +276,7 @@ with st.expander("In-sample fit (quick look)", expanded=False):
         st.write("Coefficients:", fit.params)
 
 # =================== Out-of-sample vs Random Walk (hidden) ===================
-if ENABLE_OUT_OF_SAMPLE:
+if ENABLE_OUT_OF_S AMPLE:
     st.subheader("Out-of-Sample Forecast Test (log-% errors)")
 
     ratio = st.slider("Training fraction", 0.5, 0.95, 0.8, help="Share of observations used for training.")
@@ -279,10 +337,8 @@ if ENABLE_OUT_OF_SAMPLE:
             plot_df = wide.copy()
             # Index should already be DatetimeIndex thanks to normalize_date_index
             if not isinstance(plot_df.index, pd.DatetimeIndex):
-                # Fallback (should be rare)
                 plot_df.index = pd.to_datetime(plot_df.index, errors="coerce")
 
-            # Guardrails
             good = ~pd.isna(plot_df.index)
             plot_df = plot_df.loc[good]
             if plot_df.index.nunique() <= 1:
