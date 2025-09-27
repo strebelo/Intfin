@@ -163,7 +163,7 @@ if not numeric_cols:
 
 target = st.selectbox("Dependent variable (exchange rate)",
                       numeric_cols,
-                      index=min(1, len(numeric_cols)-1))
+                      index=1)
 exog_choices = [c for c in numeric_cols if c != target]
 exogs = st.multiselect("Independent variables (optional)", exog_choices, default=[])
 
