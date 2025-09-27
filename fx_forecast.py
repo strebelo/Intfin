@@ -276,7 +276,7 @@ with st.expander("In-sample fit (quick look)", expanded=False):
         st.write("Coefficients:", fit.params)
 
 # =================== Out-of-sample vs Random Walk (hidden) ===================
-if ENABLE_OUT_OF_S AMPLE:
+if ENABLE_OUT_OF_SAMPLE:
     st.subheader("Out-of-Sample Forecast Test (log-% errors)")
 
     ratio = st.slider("Training fraction", 0.5, 0.95, 0.8, help="Share of observations used for training.")
