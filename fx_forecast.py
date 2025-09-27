@@ -271,7 +271,7 @@ Y = XY["Y"]
 X = XY.drop(columns=["Y"])
 
 # ========================= In-sample quick fit (optional) ====================
-with st.expander("In-sample fit (quick look)", expanded=False):
+with st.expander("Model performance statistics", expanded=False):
     if HAS_SM:
         fit = sm.OLS(Y, add_constant_df(X)).fit()
         st.write(fit.summary())
@@ -279,6 +279,75 @@ with st.expander("In-sample fit (quick look)", expanded=False):
         st.info("statsmodels not found; showing numpy OLS coefficients only.")
         fit = np_ols_fit(Y, X)
         st.write("Coefficients:", fit.params)
+
+# ========================= In-sample performance (chart + metrics) ===========
+st.subheader("In-sample Performance (log-% errors)")
+
+# Fitted values using the *full* estimation sample (the XY you already built)
+if HAS_SM:
+    fit_ins = sm.OLS(Y, add_constant_df(X)).fit()
+    yhat = pd.Series(fit_ins.predict(add_constant_df(X)), index=Y.index, dtype=float)
+else:
+    fit_ins = np_ols_fit(Y, X)
+    yhat = pd.Series(fit_ins.predict(X), index=Y.index, dtype=float)
+
+# Random walk = Y_{t-1} on the *same* in-sample index
+rw_is = Y.shift(1)
+
+# Align all three
+wide_is = pd.DataFrame({
+    "Actual":      pd.to_numeric(Y,     errors="coerce"),
+    "Model":       pd.to_numeric(yhat,  errors="coerce"),
+    "Random walk": pd.to_numeric(rw_is, errors="coerce"),
+}).dropna()
+
+if wide_is.empty or not isinstance(wide_is.index, pd.DatetimeIndex):
+    # Fallback if index lost datetime type
+    wide_is = wide_is.copy()
+    wide_is.index = pd.to_datetime(wide_is.index, errors="coerce")
+    wide_is = wide_is.dropna()
+
+if wide_is.empty or wide_is.index.nunique() <= 1:
+    st.warning("Not enough valid in-sample points to plot.")
+else:
+    # -------- In-sample log-% MSE (100 * ln(Forecast / Actual)) -------------
+    eps = 1e-12
+    err_model_is = 100 * np.log((wide_is["Model"] + eps) / (wide_is["Actual"] + eps))
+    err_rw_is    = 100 * np.log((wide_is["Random walk"] + eps) / (wide_is["Actual"] + eps))
+
+    c1, c2 = st.columns(2)
+    with c1: st.metric("Log-% MSE — Model (in-sample)", f"{np.mean(err_model_is**2):.6g}")
+    with c2: st.metric("Log-% MSE — Random Walk (in-sample)", f"{np.mean(err_rw_is**2):.6g}")
+
+    # ------------- Tight Altair plot with Actual included in legend ----------
+    long_df = wide_is.copy()
+    long_df["date"] = long_df.index
+    long_df = long_df.melt(id_vars="date", var_name="Series", value_name="Value")
+
+    vmin, vmax = long_df["Value"].min(), long_df["Value"].max()
+    tiny = (vmax - vmin) * 0.01 or 0.01
+    ydom = [vmin - tiny, vmax + tiny]
+
+    color_scale = alt.Scale(
+        domain=["Actual", "Model", "Random walk"],
+        range=["black", "#1f77b4", "#ff7f0e"]
+    )
+
+    chart_is = (
+        alt.Chart(long_df)
+        .mark_line()
+        .encode(
+            x=alt.X("date:T", title="Date"),
+            y=alt.Y("Value:Q", scale=alt.Scale(domain=ydom), title="Exchange rate"),
+            color=alt.Color("Series:N", scale=color_scale, legend=alt.Legend(title="Series")),
+            size=alt.condition("datum.Series == 'Actual'", alt.value(3), alt.value(1.5)),
+            tooltip=["date:T", "Series:N", "Value:Q"]
+        )
+        .interactive()
+    )
+
+    st.altair_chart(chart_is, use_container_width=True)
+
 
 # =================== Out-of-sample vs Random Walk (hidden) ===================
 if ENABLE_OUT_OF_SAMPLE:
