@@ -1,10 +1,10 @@
 # fx_forecast.py
-# Robust FX forecasting app with optional out-of-sample section (hidden by default).
-# - Normalizes date index on load (handles strings, PeriodIndex, Excel serials, YYYYMM, etc.)
-# - Coerces string-like numeric columns to numeric
-# - Default dependent var = spot exchange rate (smart heuristics)
-# - Out-of-sample block uses log-% MSE: 100 * ln(Forecast / Actual)
-# - Tight Altair plot with Actual in black, on top
+# One-step-ahead FX forecasting app:
+#   • Y = S_{t+1}
+#   • Regressors at time t: [S_t, S_{t-1}, …, X_t]
+#   • Robust date normalization + numeric coercion
+#   • In-sample chart and R²
+#   • OOS block (toggle via ENABLE_OUT_OF_Sample) using log-% MSE: 100*ln(Forecast/Actual)
 
 import streamlit as st
 import pandas as pd
@@ -14,8 +14,7 @@ import re
 from typing import Optional
 
 # ========================== Instructor switch ===============================
-# Set to True when you want to reveal the Out-of-Sample block
-ENABLE_OUT_OF_SAMPLE = True
+ENABLE_OUT_OF_SAMPLE = True  # Set False to hide the OOS section
 
 # Optional: sidebar code to toggle (uncomment to use)
 # code = st.sidebar.text_input("Instructor code", type="password", placeholder="••••")
@@ -54,7 +53,7 @@ def normalize_date_index(df: pd.DataFrame, prefer_col: Optional[str] = None) -> 
     Make df.index a clean DatetimeIndex.
     - Chooses a date column (case-insensitive 'date' or 'prefer_col'), else tries the index.
     - Handles strings 'YYYY-MM' / 'YYYY-MM-DD', integers like 197401/19740101, Excel serial days, PeriodIndex.
-    - Sorts by date and drops rows with NaT dates (reports how many).
+    - Sorts by date and drops rows with NaT dates.
     """
     df = df.copy()
 
@@ -72,7 +71,6 @@ def normalize_date_index(df: pd.DataFrame, prefer_col: Optional[str] = None) -> 
     elif date_cols_exact:
         cand = date_cols_exact[0]
     else:
-        # Heuristic: if the first column name contains "date"
         cand = df.columns[0] if re.fullmatch(r"(?i).*date.*", str(df.columns[0])) else None
 
     if cand is None:
@@ -90,8 +88,6 @@ def normalize_date_index(df: pd.DataFrame, prefer_col: Optional[str] = None) -> 
             return df
 
     s = df[cand]
-
-    # Broad parse first
     dt = pd.to_datetime(s, errors="coerce")
 
     # If many NaT, try specific numeric/string formats
@@ -128,18 +124,16 @@ def normalize_date_index(df: pd.DataFrame, prefer_col: Optional[str] = None) -> 
                 if dt_try.notna().sum() >= 0.8 * len(s_str):
                     dt = dt_try
 
-    n_nat = int(pd.isna(dt).sum())
-    if n_nat > 0:
-       # st.info(f"Date normalization: dropping {n_nat} rows with unparseable dates from '{cand}'.")
-        pass
-    df = df.loc[~pd.isna(dt)].copy()
-    df.index = pd.DatetimeIndex(dt[~pd.isna(dt)])
+    # Drop NaT and set index
+    ok = ~pd.isna(dt)
+    df = df.loc[ok].copy()
+    df.index = pd.DatetimeIndex(dt[ok])
     df = df.drop(columns=[cand], errors="ignore")
     return df.sort_index()
 
 # ============================== UI ==========================================
-st.title("Forecasting spot exchange rates")
-# st.caption("Dates are normalized automatically. OOS block uses log-% MSE and is hidden by default.")
+st.title("Forecasting spot exchange rates (one-step ahead)")
+# st.caption("Y = S_{t+1}; regressors at time t. OOS block uses log-% MSE and can be toggled.")
 
 uploaded = st.file_uploader(
     "Upload data (CSV or Excel). Must include a 'date' column or a date-like index/column.",
@@ -186,6 +180,7 @@ if not candidate_cols:
     st.error("No numeric columns found after loading/coercing the data.")
     st.stop()
 
+# Show a formatted date preview without touching the working df/index
 st.write(
     df.copy()
       .assign(date_fmt=df.index.strftime("%Y-%m"))
@@ -196,29 +191,17 @@ st.write(
 def _score_as_spot(name: str) -> int:
     """Higher score => more likely to be a spot FX series (deprioritize policy rates)."""
     n = name.lower().strip()
-
-    # hard demotions: bank/policy rates, yields, typical macro
     if any(bad in n for bad in ["bank rate", "boe", "policy", "base rate", "yield", "cpi", "ppi"]):
         return -5
-
     score = 0
-    # strong exact-ish names
     if n in {"spot", "s", "spot_fx", "spot rate", "exchange rate", "exrate", "fx_spot", "s_fx"}:
         score += 8
-
-    # keywords suggesting FX spot
     if "spot" in n:  score += 5
     if "fx" in n:    score += 3
     if "exch" in n:  score += 3
-    if "rate" in n:  score += 1  # mild
-
-    # currency pair patterns: EURUSD, USD/EUR, GBP-USD, etc.
-    if re.search(r"\b[A-Z]{3}[/\- ]?[A-Z]{3}\b", name):
-        score += 6
-    if re.fullmatch(r"[A-Z]{6}", name):  # e.g., EURUSD
-        score += 5
-
-    # common currency tokens
+    if "rate" in n:  score += 1
+    if re.search(r"\b[A-Z]{3}[/\- ]?[A-Z]{3}\b", name): score += 6
+    if re.fullmatch(r"[A-Z]{6}", name): score += 5
     for kw in ["usd", "eur", "gbp", "jpy", "chf", "aud", "cad", "nzd", "brl", "mxn", "cny", "hkd", "sgd"]:
         if kw in n:
             score += 2
@@ -236,10 +219,10 @@ target = st.selectbox(
     help="Defaults to the most likely spot exchange-rate series."
 )
 
-# Exogenous choices exclude the target; default empty
+# Exogenous choices exclude the target; default empty (contemporaneous X_t)
 exog_choices = [c for c in candidate_cols if c != target]
 exogs = st.multiselect(
-    "Independent variables (optional, contemporaneous)",
+    "Independent variables at time t (optional, contemporaneous)",
     exog_choices,
     default=[]
 )
@@ -248,7 +231,7 @@ exogs = st.multiselect(
 max_lags = st.slider("Number of AR lags on the exchange rate", 0, 12, 0)
 
 # ========================= Build regression data =============================
-# Build lagged target regressors
+# Build lagged target regressors S_{t-1}, S_{t-2}, ...
 lag_cols = {}
 for L in range(1, max_lags + 1):
     lag_name = f"{target}_lag{L}"
@@ -256,19 +239,21 @@ for L in range(1, max_lags + 1):
 
 X_parts = [pd.DataFrame(lag_cols, index=df.index)]
 if exogs:
-    X_parts.append(df[exogs])
+    X_parts.append(df[exogs])  # contemporaneous X_t
 
 X = pd.concat(X_parts, axis=1)
 
-# Align Y and X, drop rows with NaN from lags/contemporaneous
-Y = df[target].copy()
-XY = pd.concat([Y.rename("Y"), X], axis=1).dropna()
+# ---- ONE-STEP-AHEAD CHANGE: set Y = S_{t+1} at index t ----
+Y = df[target].shift(-1).rename("Y_next")  # S_{t+1}
+
+# Align and drop rows with NaN from lags/contemporaneous
+XY = pd.concat([Y, X], axis=1).dropna()
 if XY.empty:
-    st.error("After constructing lags and aligning data, there are no rows to estimate. Increase data length or reduce lags.")
+    st.error("After constructing Y=S_{t+1} and regressors at t, no rows remain. Increase data length or reduce lags.")
     st.stop()
 
-Y = XY["Y"]
-X = XY.drop(columns=["Y"])
+Y = XY["Y_next"]
+X = XY.drop(columns=["Y_next"])
 
 # ========================= In-sample quick fit (optional) ====================
 with st.expander("Model performance statistics", expanded=False):
@@ -281,28 +266,26 @@ with st.expander("Model performance statistics", expanded=False):
         st.write("Coefficients:", fit.params)
 
 # ========================= In-sample performance (chart + R²) ================
-st.subheader("Model Performance")
+st.subheader("In-sample Performance (predicting next period Sₜ₊₁)")
 
 # Fit using the full estimation sample
 if HAS_SM:
     fit_ins = sm.OLS(Y, add_constant_df(X)).fit()
     yhat = pd.Series(fit_ins.predict(add_constant_df(X)), index=Y.index, dtype=float)
-    r2_insample = fit_ins.rsquared   # <-- standard R²
+    r2_insample = fit_ins.rsquared   # R² for S_{t+1} fit
 else:
     fit_ins = np_ols_fit(Y, X)
     yhat = pd.Series(fit_ins.predict(X), index=Y.index, dtype=float)
-    # compute R² manually
     ss_res = np.sum((Y - yhat) ** 2)
     ss_tot = np.sum((Y - Y.mean()) ** 2)
     r2_insample = 1 - ss_res / ss_tot
 
-# Show R² metric
-st.metric("Model R²", f"{r2_insample:.4f}")
+st.metric("Model R² (Sₜ₊₁ on info at t)", f"{r2_insample:.4f}")
 
 # Align for plotting
 wide_is = pd.DataFrame({
-    "Actual": pd.to_numeric(Y, errors="coerce"),
-    "Model":  pd.to_numeric(yhat, errors="coerce"),
+    "Actual Sₜ₊₁": pd.to_numeric(Y, errors="coerce"),
+    "Model Ŝₜ₊₁":  pd.to_numeric(yhat, errors="coerce"),
 }).dropna()
 
 if wide_is.empty or not isinstance(wide_is.index, pd.DatetimeIndex):
@@ -322,7 +305,7 @@ else:
     ydom = [vmin - tiny, vmax + tiny]
 
     color_scale = alt.Scale(
-        domain=["Actual", "Model"],
+        domain=["Actual Sₜ₊₁", "Model Ŝₜ₊₁"],
         range=["black", "#1f77b4"]
     )
 
@@ -330,33 +313,29 @@ else:
         alt.Chart(long_df)
         .mark_line()
         .encode(
-            x=alt.X("date:T", title="Date"),
-            y=alt.Y("Value:Q", scale=alt.Scale(domain=ydom), title="Exchange rate"),
-            color=alt.Color("Series:N", scale=color_scale,
-                            legend=alt.Legend(title="Series")),
-            size=alt.condition("datum.Series == 'Actual'",
-                               alt.value(3), alt.value(1.5)),
+            x=alt.X("date:T", title="Date (indexed by t)"),
+            y=alt.Y("Value:Q", scale=alt.Scale(domain=ydom), title="Next-period exchange rate Sₜ₊₁"),
+            color=alt.Color("Series:N", scale=color_scale, legend=alt.Legend(title="Series")),
+            size=alt.condition("datum.Series == 'Actual Sₜ₊₁'", alt.value(3), alt.value(1.5)),
             tooltip=["date:T", "Series:N", "Value:Q"]
         )
         .interactive()
     )
-
     st.altair_chart(chart_is, use_container_width=True)
 
-
-# =================== Out-of-sample vs Random Walk (hidden) ===================
+# =================== Out-of-sample vs Random Walk (optional) =================
 if ENABLE_OUT_OF_SAMPLE:
-    st.subheader("Out-of-Sample Forecast Performance (log-% errors)")
+    st.subheader("Out-of-Sample Forecast Performance (log-% errors) — One-step ahead")
 
     ratio = st.slider("Training fraction", 0.5, 0.95, 0.8, help="Share of observations used for training.")
     split = int(len(Y) * ratio)
-    if split < max(10, max_lags + 1) or split >= len(Y) - 1:
+    if split < max(10, max_lags + 2) or split >= len(Y) - 1:
         st.warning("Not enough observations in train/test after split. Adjust the training fraction.")
     else:
         X_tr, X_te = X.iloc[:split], X.iloc[split:]
         Y_tr, Y_te = Y.iloc[:split], Y.iloc[split:]
 
-        # Fit OOS
+        # Fit OOS (predict S_{t+1})
         if HAS_SM:
             fit_oos = sm.OLS(Y_tr, add_constant_df(X_tr)).fit()
             pred = pd.Series(fit_oos.predict(add_constant_df(X_te)), index=X_te.index, dtype=float)
@@ -364,8 +343,8 @@ if ENABLE_OUT_OF_SAMPLE:
             fit_oos = np_ols_fit(Y_tr, X_tr)
             pred = pd.Series(fit_oos.predict(X_te), index=X_te.index, dtype=float)
 
-        # Random walk forecast = lag1 of Y
-        rw = Y.shift(1).iloc[split:].astype(float)
+        # Random walk one-step-ahead: forecast S_{t+1} with S_t aligned on the same index
+        rw = df[target].reindex(Y_te.index)  # S_t aligned to predict Y_te = S_{t+1}
 
         # Align to common index
         common_idx = Y_te.index.intersection(pred.index).intersection(rw.index)
@@ -373,22 +352,22 @@ if ENABLE_OUT_OF_SAMPLE:
         pred_c = pd.to_numeric(pred.reindex(common_idx), errors="coerce")
         rw_c   = pd.to_numeric(rw.reindex(common_idx),   errors="coerce")
 
-        wide = pd.DataFrame({"Actual": Y_te_c, "Model": pred_c, "Random walk": rw_c}).dropna()
+        wide = pd.DataFrame({"Actual Sₜ₊₁": Y_te_c, "Model Ŝₜ₊₁": pred_c, "RW (Sₜ)": rw_c}).dropna()
 
         if wide.empty:
             st.warning("No overlapping non-NaN points in OOS test after alignment.")
         else:
             # ---- Log-% errors: 100 * ln(Forecast / Actual) ----
             eps = 1e-12
-            err_model = 100 * np.log((wide["Model"] + eps) / (wide["Actual"] + eps))
-            err_rw    = 100 * np.log((wide["Random walk"] + eps) / (wide["Actual"] + eps))
+            err_model = 100 * np.log((wide["Model Ŝₜ₊₁"] + eps) / (wide["Actual Sₜ₊₁"] + eps))
+            err_rw    = 100 * np.log((wide["RW (Sₜ)"]       + eps) / (wide["Actual Sₜ₊₁"] + eps))
 
             mse_model = float(np.mean(err_model ** 2))
             mse_rw    = float(np.mean(err_rw ** 2))
 
             c1, c2 = st.columns(2)
-            with c1: st.metric("Log-% MSE — Model", f"{mse_model:.6g}")
-            with c2: st.metric("Log-% MSE — Random Walk", f"{mse_rw:.6g}")
+            with c1: st.metric("Log-% MSE — Model (Ŝₜ₊₁)", f"{mse_model:.6g}")
+            with c2: st.metric("Log-% MSE — Random Walk (Sₜ)", f"{mse_rw:.6g}")
 
             if np.isfinite(mse_model) and np.isfinite(mse_rw):
                 if mse_model < mse_rw:
@@ -402,44 +381,40 @@ if ENABLE_OUT_OF_SAMPLE:
             else:
                 st.info("Results not comparable due to non-finite values.")
 
-# ------------- Tight Altair plot: include Actual in legend -------------
-plot_df = wide.copy()
-if not isinstance(plot_df.index, pd.DatetimeIndex):
-    plot_df.index = pd.to_datetime(plot_df.index, errors="coerce")
+            # ---- OOS plot ----
+            plot_df = wide.copy()
+            if not isinstance(plot_df.index, pd.DatetimeIndex):
+                plot_df.index = pd.to_datetime(plot_df.index, errors="coerce")
+            good = ~pd.isna(plot_df.index)
+            plot_df = plot_df.loc[good]
 
-good = ~pd.isna(plot_df.index)
-plot_df = plot_df.loc[good]
-if plot_df.index.nunique() <= 1:
-    st.warning("Only one unique date in OOS window—cannot plot a time series.")
-else:
-    long_df = plot_df.copy()
-    long_df["date"] = long_df.index
-    long_df = long_df.melt(id_vars="date", var_name="Series", value_name="Value")
+            if plot_df.index.nunique() <= 1:
+                st.warning("Only one unique date in OOS window—cannot plot a time series.")
+            else:
+                long_df = plot_df.copy()
+                long_df["date"] = long_df.index
+                long_df = long_df.melt(id_vars="date", var_name="Series", value_name="Value")
 
-    # Tight y-range
-    vmin, vmax = long_df["Value"].min(), long_df["Value"].max()
-    tiny = (vmax - vmin) * 0.01 or 0.01
-    ydom = [vmin - tiny, vmax + tiny]
+                vmin, vmax = long_df["Value"].min(), long_df["Value"].max()
+                tiny = (vmax - vmin) * 0.01 or 0.01
+                ydom = [vmin - tiny, vmax + tiny]
 
-    # Give Actual a fixed color but still show it in the legend
-    color_scale = alt.Scale(
-        domain=["Actual", "Model", "Random walk"],
-        range=["black", "#1f77b4", "#ff7f0e"]
-    )
+                color_scale = alt.Scale(
+                    domain=["Actual Sₜ₊₁", "Model Ŝₜ₊₁", "RW (Sₜ)"],
+                    range=["black", "#1f77b4", "#ff7f0e"]
+                )
 
-    chart = (
-        alt.Chart(long_df)
-        .mark_line()
-        .encode(
-            x=alt.X("date:T", title="Date"),
-            y=alt.Y("Value:Q", scale=alt.Scale(domain=ydom), title="Exchange rate"),
-            color=alt.Color("Series:N", scale=color_scale, legend=alt.Legend(title="Series")),
-            size=alt.condition("datum.Series == 'Actual'", alt.value(3), alt.value(1.5)),
-            tooltip=["date:T", "Series:N", "Value:Q"]
-        )
-        .interactive()
-    )
+                chart = (
+                    alt.Chart(long_df)
+                    .mark_line()
+                    .encode(
+                        x=alt.X("date:T", title="Date (indexed by t)"),
+                        y=alt.Y("Value:Q", scale=alt.Scale(domain=ydom), title="Next-period exchange rate Sₜ₊₁"),
+                        color=alt.Color("Series:N", scale=color_scale, legend=alt.Legend(title="Series")),
+                        size=alt.condition("datum.Series == 'Actual Sₜ₊₁'", alt.value(3), alt.value(1.5)),
+                        tooltip=["date:T", "Series:N", "Value:Q"]
+                    )
+                    .interactive()
+                )
 
-    st.altair_chart(chart, use_container_width=True)
-
-
+                st.altair_chart(chart, use_container_width=True)
