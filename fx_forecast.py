@@ -240,7 +240,7 @@ exogs = st.multiselect(
 )
 
 # AR lags on the dependent variable
-max_lags = st.slider("Number of AR lags on the exchange rate", 1, 12, 1)
+max_lags = st.slider("Number of AR lags on the exchange rate", 0, 12, 0)
 
 # ========================= Build regression data =============================
 # Build lagged target regressors
