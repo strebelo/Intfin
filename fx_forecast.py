@@ -137,7 +137,7 @@ def normalize_date_index(df: pd.DataFrame, prefer_col: Optional[str] = None) -> 
     return df.sort_index()
 
 # ============================== UI ==========================================
-st.title("FX Forecast (AR lags + optional contemporaneous exogenous)")
+st.title("Forecasting spot exchange rates")
 st.caption("Dates are normalized automatically. OOS block uses log-% MSE and is hidden by default.")
 
 uploaded = st.file_uploader(
@@ -185,7 +185,11 @@ if not candidate_cols:
     st.error("No numeric columns found after loading/coercing the data.")
     st.stop()
 
-st.write("Preview:", df.head())
+st.write(
+    df.copy()
+      .assign(date_fmt=df.index.strftime("%Y-%m"))
+      .set_index("date_fmt")
+)
 
 # ========================= Controls (spot default) ===========================
 def _score_as_spot(name: str) -> int:
