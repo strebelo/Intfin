@@ -15,7 +15,7 @@ from typing import Optional
 
 # ========================== Instructor switch ===============================
 # Set to True when you want to reveal the Out-of-Sample block
-ENABLE_OUT_OF_SAMPLE = False
+ENABLE_OUT_OF_SAMPLE = True
 
 # Optional: sidebar code to toggle (uncomment to use)
 # code = st.sidebar.text_input("Instructor code", type="password", placeholder="••••")
