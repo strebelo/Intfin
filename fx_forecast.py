@@ -251,6 +251,4 @@ if ENABLE_OUT_OF_SAMPLE:
     chart_df = chart_df.apply(pd.to_numeric, errors="coerce").dropna()
     chart_df.index = chart_df.index.astype(str)  # show dates cleanly on x-axis
     st.line_chart(chart_df)
-else:
-    # Keep a real block under 'else' to avoid IndentationError if you later add/remove lines
-    st.info("Out-of-sample section is currently disabled.")
+
