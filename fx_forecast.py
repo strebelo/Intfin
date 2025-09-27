@@ -208,9 +208,9 @@ ss_tot = float(np.sum((Y - Y.mean()) ** 2))
 r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
 st.metric("In-sample R²", f"{r2:.4f}")
 
-# ======================= Out-of-sample vs Random Walk =======================
+ ======================= Out-of-sample vs Random Walk =======================
 if ENABLE_OUT_OF_SAMPLE:
-    st.subheader("Out-of-Sample Forecast Test")
+    st.subheader("Out-of-Sample Forecast Test (log-% errors)")
 
     ratio = st.slider("Training fraction", 0.5, 0.95, 0.8)
     split = int(len(Y) * ratio)
@@ -220,78 +220,96 @@ if ENABLE_OUT_OF_SAMPLE:
 
     fit_oos = sm.OLS(Y_tr, X_tr).fit() if HAS_SM else np_ols_fit(Y_tr, X_tr)
     pred = pd.Series(fit_oos.predict(X_te), index=X_te.index, dtype=float)
-    rw = Y.shift(1).iloc[split:].astype(float)
+    rw   = Y.shift(1).iloc[split:].astype(float)
 
+    # Align series to a common index
     pred, Y_te = pred.align(Y_te, join="inner")
-    rw, Y_te  = rw.align(Y_te,  join="inner")
+    rw,  Y_te  = rw.align(Y_te,  join="inner")
 
-    mse_model = float(np.mean((pred - Y_te) ** 2))
-    mse_rw    = float(np.mean((rw   - Y_te) ** 2))
+    # ---- Log-percentage errors: 100 * ln(Forecast / Actual) ----
+    # Add small epsilon to avoid log(0) if any value is zero
+    eps = 1e-12
+    err_model = 100 * np.log((pred + eps) / (Y_te + eps))
+    err_rw    = 100 * np.log((rw   + eps) / (Y_te + eps))
+
+    mse_model = float(np.mean(err_model ** 2))
+    mse_rw    = float(np.mean(err_rw ** 2))
 
     c1, c2 = st.columns(2)
     with c1:
-        st.metric("OOS MSE — Model", f"{mse_model:.6g}")
+        st.metric("Log-% MSE — Model", f"{mse_model:.6g}")
     with c2:
-        st.metric("OOS MSE — Random Walk", f"{mse_rw:.6g}")
+        st.metric("Log-% MSE — Random Walk", f"{mse_rw:.6g}")
 
     if np.isfinite(mse_model) and np.isfinite(mse_rw):
         if mse_model < mse_rw:
             imp = (mse_rw - mse_model) / mse_rw * 100 if mse_rw > 0 else np.nan
-            st.success(f"✅ Model beats the random walk (MSE ↓ {imp:.2f}%).")
+            st.success(f"✅ Model beats RW (Log-% MSE ↓ {imp:.2f}%).")
         elif mse_model > mse_rw:
             det = (mse_model - mse_rw) / mse_rw * 100 if mse_rw > 0 else np.nan
-            st.warning(f"⚠️ Random walk performs better (Model MSE ↑ {det:.2f}% vs RW).")
+            st.warning(f"⚠️ Random walk better (Model Log-% MSE ↑ {det:.2f}% vs RW).")
         else:
-            st.info("⚖️ Tie: same MSE.")
+            st.info("⚖️ Tie: same Log-% MSE.")
     else:
-        st.info("Results not comparable due to insufficient or non-finite values.")
+        st.info("Results not comparable due to non-finite values.")
 
 import altair as alt
 import numpy as np
 
-# --- Align the three series ---
+# --- Align & build chart_df ---
 common_idx = Y_te.index.intersection(pred.index).intersection(rw.index)
 Y_te_c = pd.to_numeric(Y_te.reindex(common_idx), errors="coerce")
 pred_c = pd.to_numeric(pred.reindex(common_idx), errors="coerce")
 rw_c   = pd.to_numeric(rw.reindex(common_idx),  errors="coerce")
 
 chart_df = pd.DataFrame({
-    "Data":      Y_te_c,
+    "Actual":      Y_te_c,
     "Model":       pred_c,
     "Random walk": rw_c
 }).dropna()
-chart_df.index = chart_df.index.astype(str)
 
-# --- Compute tight vertical range ---
-vmin = chart_df.min().min()
-vmax = chart_df.max().max()
-tiny = (vmax - vmin) * 0.01 or 0.01  # 1 % of range or 0.01 if flat
-domain = [vmin - tiny, vmax + tiny]
+# If everything vanished, stop early with a hint
+if chart_df.empty or chart_df["Actual"].isna().all():
+    st.warning("No valid 'Actual' points to plot after alignment—check index overlap and NaNs.")
+else:
+    chart_df.index = chart_df.index.astype(str)
 
-# --- Prepare long form for Altair ---
-plot_df = chart_df.reset_index(names="date").melt(
-    "date", var_name="Series", value_name="Value"
-)
+    # Long form
+    plot_df = chart_df.reset_index(names="date").melt(
+        "date", var_name="Series", value_name="Value"
+    )
 
-# --- Altair chart with fixed y-domain ---
-line = (
-    alt.Chart(plot_df)
-       .mark_line()
-       .encode(
-           x=alt.X("date:T", title="Date"),
-           y=alt.Y("Value:Q", scale=alt.Scale(domain=domain), title="Exchange rate"),
-           color=alt.Color(
-               "Series:N",
-               scale=alt.Scale(
-                   domain=["Actual", "Model", "Random walk"],   # categories
-                   range=["black", "#1f77b4", "#ff7f0e"]        # colors in same order
-               ),
-               legend=alt.Legend(title="Series")
-           ),
-           tooltip=["date:T", "Series:N", "Value:Q"]
-       )
-       .properties(width="container")
-       .interactive()
-)
+    # Sanity check (optional while debugging)
+    # st.write("Series present:", plot_df["Series"].unique().tolist())
 
-st.altair_chart(line, use_container_width=True)
+    # Tight y-range
+    vmin, vmax = chart_df.min().min(), chart_df.max().max()
+    tiny = (vmax - vmin) * 0.01 or 0.01
+    domain = [vmin - tiny, vmax + tiny]
+
+    # Split layers: others (colored) + Actual (black, thicker, on top)
+    others = plot_df[plot_df["Series"] != "Actual"]
+    actual = plot_df[plot_df["Series"] == "Actual"]
+
+    base_enc = dict(
+        x=alt.X("date:T", title="Date"),
+        y=alt.Y("Value:Q", scale=alt.Scale(domain=domain), title="Exchange rate"),
+        tooltip=["date:T", "Series:N", "Value:Q"]
+    )
+
+    layer_others = alt.Chart(others).mark_line().encode(
+        **base_enc,
+        color=alt.Color("Series:N",
+                        scale=alt.Scale(
+                            domain=["Model", "Random walk"],
+                            range=["#1f77b4", "#ff7f0e"]),
+                        legend=alt.Legend(title="Series"))
+    )
+
+    layer_actual = alt.Chart(actual).mark_line(color="black", strokeWidth=3).encode(
+        **base_enc
+    ).properties(zindex=10)  # draw on top
+
+    chart = (layer_others + layer_actual).resolve_scale(color="independent").interactive()
+
+    st.altair_chart(chart, use_container_width=True)
