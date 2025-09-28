@@ -1,15 +1,15 @@
-# requirements.txt
-# streamlit
-# numpy
-# quantecon
-# matplotlib
+requirements.txt
+streamlit
+numpy
+quantecon
+matplotlib
 
 import streamlit as st
 import numpy as np
 from quantecon import klein
 import matplotlib.pyplot as plt
 
-st.title("New Keynesian Central Bank Game")
+st.title("Running a Central Bank")
 
 # --- Parameters ---
 beta   = 0.99
