@@ -6,7 +6,6 @@ matplotlib
 
 import streamlit as st
 import numpy as np
-from quantecon import klein
 import matplotlib.pyplot as plt
 
 st.title("Running a Central Bank")
