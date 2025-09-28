@@ -266,7 +266,7 @@ with st.expander("Model performance statistics", expanded=False):
         st.write("Coefficients:", fit.params)
 
 # ========================= In-sample performance (chart + R²) ================
-st.subheader("In-sample Performance (predicting next period Sₜ₊₁)")
+st.subheader("Model Performance")
 
 # Fit using the full estimation sample
 if HAS_SM:
