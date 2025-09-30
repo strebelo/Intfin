@@ -1,20 +1,20 @@
 # ------------------------------
 # Currency Risk Hedging Simulator (Streamlit) — Constant Hedge Fraction
+# with Unhedged Baseline (h = 0)
 # ------------------------------
 # What changed vs. your previous version?
+# - Adds an explicit "Unhedged (h=0)" baseline alongside:
+#     (A) Hedge-all-at-0
+#     (B) Roll 1-Year
+# - Summary table and histograms include the unhedged distribution.
+#
+# Modeling assumptions:
 # - Students choose a SINGLE hedge fraction h (0–100%) that applies to every year.
-# - Two strategies remain for *how* that constant fraction is hedged:
-#     (A) Hedge-all-at-0  : lock each year's hedged fraction at t=0 via F₀→t
-#     (B) Roll 1-Year     : each year t-1, lock next year's hedged fraction via F_{t-1→t}
-# - The unhedged (1-h) share is converted at spot S_t when cash arrives.
-# - No custom matrix; no term structure (still constant r_d, r_f).
-#
-# Notation:
-#   FC/DC = "foreign currency per 1 unit of domestic currency"
-#   To convert foreign amount (FC) to domestic (DC) at rate X = (FC/DC): DC = FC / X
-#
-# Forward formula (covered interest parity, with constant rates):
-#   F_{t->m} (FC/DC) = S_t * [ (1 + r_d)^(m - t) / (1 + r_f)^(m - t) ]
+# - No term structure: constant domestic and foreign annual rates r_d, r_f.
+# - Forwards via covered interest parity with constant rates:
+#     F_{t->m} (FC/DC) = S_t * [ (1 + r_d)^(m - t) / (1 + r_f)^(m - t) ]
+# - FC/DC notation: spot/forward are "foreign currency per 1 unit of domestic".
+#   To convert foreign amount (FC) to domestic (DC) at a rate X (FC/DC): DC = FC / X.
 #
 # Discount factors with constant r:
 #   DF_r[0] = 1
@@ -218,7 +218,7 @@ st.title("💱 Currency Risk Hedging Simulator")
 
 st.write(
     "Rates and spots are shown as **FOREIGN per 1 DOMESTIC (FC/DC)**. "
-    "To convert FC to DC, divide by the rate."
+    "To convert foreign amount (FC) to domestic (DC), divide by the rate."
 )
 
 # Sidebar controls
@@ -266,6 +266,7 @@ tabs = st.tabs(["Compare Constant-Fraction Strategies"])
 with tabs[0]:
     st.markdown("### Constant Hedge Fraction (h) — Strategy Comparison")
     st.caption(
+        "- **Unhedged (h=0)**: 100% converts at spot S_t. (Forward spreads/strategy irrelevant.)\n"
         "- **Hedge-all-at-0**: for each year t, hedge `h × revenue_t` at t=0 using F₀,ₜ = S₀ × ((1+r_d)^t / (1+r_f)^t); "
         "the remaining (1−h) converts at spot S_t.\n"
         "- **Roll 1-Year**: each year t−1, hedge `h × revenue_t` for year t using F_{t-1,t} = S_{t-1} × (1+r_d)/(1+r_f); "
@@ -275,6 +276,7 @@ with tabs[0]:
     if st.button("Simulate"):
         S_paths = simulate_spot_paths(S0=S0, sigma=sigma, n_sims=n_sims, T=10, seed=seed)
 
+        # --- Strategy A: Hedge-all-at-0 (constant h) ---
         res_A = compute_strategy_results_constant_hedge(
             S_paths=S_paths, S0=S0,
             DF_d_0=DF_d_0, DF_f_0=DF_f_0,
@@ -285,6 +287,7 @@ with tabs[0]:
             strategy="all_at_t0"
         )
 
+        # --- Strategy B: Roll 1-Year (constant h) ---
         res_B = compute_strategy_results_constant_hedge(
             S_paths=S_paths, S0=S0,
             DF_d_0=DF_d_0, DF_f_0=DF_f_0,
@@ -295,19 +298,36 @@ with tabs[0]:
             strategy="roll_one_year"
         )
 
+        # --- Unhedged baseline (h = 0) ---
+        res_U = compute_strategy_results_constant_hedge(
+            S_paths=S_paths, S0=S0,
+            DF_d_0=DF_d_0, DF_f_0=DF_f_0,
+            r_d=r_d, r_f=r_f,
+            costs_dc=costs_dc, revenue_fc=revenue_fc,
+            spread_bps=spread_bps,
+            hedge_frac=0.0,                 # key line (h=0)
+            strategy="all_at_t0"            # strategy irrelevant when h=0
+        )
+
+        # Summary table
         summary = pd.DataFrame({
-            "Strategy": ["Hedge-all-at-0", "Roll 1-Year"],
-            "Hedge Fraction h": [hedge_frac, hedge_frac],
-            "Avg PV Revenue (DOM)": [res_A["avg_pv_revenue"], res_B["avg_pv_revenue"]],
-            "Avg PV Cost (DOM)":    [res_A["avg_pv_cost"],    res_B["avg_pv_cost"]],
-            "Avg PV Profit (DOM)":  [res_A["avg_pv_profit"],  res_B["avg_pv_profit"]],
-            "StdDev PV Profit":     [res_A["std_pv_profit"],  res_B["std_pv_profit"]],
+            "Strategy": ["Unhedged (h=0)", "Hedge-all-at-0", "Roll 1-Year"],
+            "Hedge Fraction h": [0.0, hedge_frac, hedge_frac],
+            "Avg PV Revenue (DOM)": [res_U["avg_pv_revenue"], res_A["avg_pv_revenue"], res_B["avg_pv_revenue"]],
+            "Avg PV Cost (DOM)":    [res_U["avg_pv_cost"],    res_A["avg_pv_cost"],    res_B["avg_pv_cost"]],
+            "Avg PV Profit (DOM)":  [res_U["avg_pv_profit"],  res_A["avg_pv_profit"],  res_B["avg_pv_profit"]],
+            "StdDev PV Profit":     [res_U["std_pv_profit"],  res_A["std_pv_profit"],  res_B["std_pv_profit"]],
         })
         st.dataframe(summary, use_container_width=True)
 
+        # Histograms
         st.markdown("#### PV Profit Distribution")
-        for title, arr in [("Hedge-all-at-0: PV Profit (DOM)", res_A["pv_profit_per_sim"]),
-                           ("Roll 1-Year: PV Profit (DOM)",    res_B["pv_profit_per_sim"])]:
+        plot_list = [
+            ("Unhedged (h=0): PV Profit (DOM)", res_U["pv_profit_per_sim"]),
+            ("Hedge-all-at-0: PV Profit (DOM)", res_A["pv_profit_per_sim"]),
+            ("Roll 1-Year: PV Profit (DOM)",    res_B["pv_profit_per_sim"]),
+        ]
+        for title, arr in plot_list:
             finite = arr[np.isfinite(arr)]
             if finite.size == 0:
                 st.warning(f"No finite values to plot for '{title}'. Check inputs (rates > -100%, etc.).")
@@ -317,10 +337,4 @@ with tabs[0]:
                 plt.title(title)
                 st.pyplot(fig)
 
-# st.markdown("---")
-# st.markdown(
-#     "- **Student inputs**: one **domestic rate r_d**, one **foreign rate r_f** (annual, constant), and a **single hedge fraction h** applied to every year.\n"
-#     "- **Mechanics**: forwards are synthetic via covered interest parity; hedged share uses forward DC/FC (bid), unhedged share converts at the realized spot.\n"
-#     "- **Validity checks**: rates must be greater than **-100%**; spot must be positive; spread non-negative.\n"
-#     "- **Numerical guards**: tiny floors avoid division by zero; charts warn if inputs produce non-finite results."
-# )
+# End of file
