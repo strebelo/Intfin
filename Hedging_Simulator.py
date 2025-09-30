@@ -1,23 +1,19 @@
 # ------------------------------
-# Currency Risk Hedging Simulator (Streamlit) — Constant Hedge Fraction
-# with Unhedged Baseline (h = 0) + Combined Cash-Flow Editor + Loss Fractions
+# Currency Risk Hedging Simulator (Streamlit) — DC/FC Quoting
+# Constant Hedge Fraction with Unhedged Baseline (h = 0)
 # ------------------------------
-# What changed vs. your version?
-# - Cash-flow table now covers ONLY years 1–10 (no "0→9" first line to delete).
-# - Costs & Revenues edited in a single table for convenience.
-# - Summary now reports Frac(PV Profit < 0) for Unhedged and both hedge strategies.
+# What changed vs. previous version?
+# - All rates (spot & forward) are quoted as DOMESTIC per 1 FOREIGN (DC/FC).
+# - Conversions use DC = FC × (DC/FC).
+# - CIP in DC/FC:
+#     F_{t->m}^{DC/FC} = S_t^{DC/FC} * ((1 + r_f)^(m - t) / (1 + r_d)^(m - t))
+# - Roll 1Y forward:
+#     F_{t-1->t}^{DC/FC} = S_{t-1}^{DC/FC} * ((1 + r_f) / (1 + r_d))
 #
-# Modeling assumptions (unchanged):
-# - Students choose a SINGLE hedge fraction h (0–100%) that applies to every year.
-# - No term structure: constant domestic and foreign annual rates r_d, r_f.
-# - Forwards via covered interest parity with constant rates:
-#     F_{t->m} (FC/DC) = S_t * [ (1 + r_d)^(m - t) / (1 + r_f)^(m - t) ]
-# - FC/DC notation: spot/forward are "foreign currency per 1 unit of domestic".
-#   To convert foreign amount (FC) to domestic (DC) at a rate X (FC/DC): DC = FC / X.
-#
-# Discount factors with constant r:
-#   DF_r[0] = 1
-#   DF_r[t] = 1 / (1 + r)^t, for t = 1..T
+# Modeling assumptions:
+# - One constant hedge fraction h applied to every year.
+# - Constant domestic and foreign annual rates r_d, r_f.
+# - Loss metric reported: Frac(PV Profit < 0) for Unhedged, Hedge-all-at-0, Roll 1-Year.
 # ------------------------------
 
 import numpy as np
@@ -32,56 +28,51 @@ import matplotlib.pyplot as plt
 def make_discount_factors_constant(r: float, T: int = 10):
     """
     Build discount factors DF[0..T] from a single annual rate r (constant across maturities).
-    Annual compounding:
         DF[0] = 1
         DF[t] = 1 / (1 + r)^t
-    Notes:
-        - If 1 + r <= 0, discounting breaks. We guard and set a tiny positive denom.
     """
     DF = np.ones(T + 1, dtype=float)
-    denom_base = 1.0 + float(r)
-    if denom_base <= 0:
-        denom_base = 1e-9  # guard
+    base = 1.0 + float(r)
+    if base <= 0:
+        base = 1e-9
     for t in range(1, T + 1):
-        DF[t] = 1.0 / (denom_base ** t)
+        DF[t] = 1.0 / (base ** t)
     return DF
 
-def forward_fc_per_dc_constant_rate(S_t, r_d, r_f, t, m):
+def forward_dc_per_fc_constant_rate(S_t_dc_fc, r_d, r_f, t, m):
     """
-    Synthetic forward (FC/DC) from t to m using covered interest parity with constant rates.
-        F_{t->m} = S_t * ((1 + r_d)^(m - t) / (1 + r_f)^(m - t))
-    Requires m > t.
-    Accepts scalar or vector S_t.
+    Synthetic forward (DC/FC) from t to m using covered interest parity with CONSTANT rates:
+        F_{t->m}^{DC/FC} = S_t^{DC/FC} * ((1 + r_f)^(m - t) / (1 + r_d)^(m - t))
+    Requires m > t. Accepts scalar or vector S_t^{DC/FC}.
     """
     if m <= t:
         raise ValueError("Forward maturity m must be greater than t.")
     horiz = m - t
-    num = (1.0 + float(r_d)) ** horiz
-    den = (1.0 + float(r_f)) ** horiz
+    num = (1.0 + float(r_f)) ** horiz
+    den = (1.0 + float(r_d)) ** horiz
     if den <= 0:
         den = 1e-12
-    return S_t * (num / den)
+    return S_t_dc_fc * (num / den)
 
-def dc_per_fc_bid_ask_from_fc_per_dc(F_fc_dc_mid, spread_bps):
+def dc_per_fc_bid_ask_from_mid(mid_dc_fc, spread_bps):
     """
-    Convert an FC/DC forward mid into DC/FC bid-ask with a symmetric spread in basis points.
-    - mid_dc_fc = 1 / mid_fc_dc
-    - bid = mid_dc_fc * (1 - s/2), ask = mid_dc_fc * (1 + s/2), where s = spread_bps / 10,000
+    Given a DC/FC forward MID and a symmetric spread in basis points, return (bid, ask) in DC/FC.
+      bid = mid * (1 - s/2),  ask = mid * (1 + s/2),  s = spread_bps / 10,000
+    Use BID when converting FC→DC (you receive bid).
     """
-    mid_dc_fc = 1.0 / F_fc_dc_mid
     s = max(0.0, float(spread_bps)) / 10000.0
     bid = mid_dc_fc * (1.0 - s / 2.0)
     ask = mid_dc_fc * (1.0 + s / 2.0)
     return bid, ask
 
-def simulate_spot_paths(S0, sigma, n_sims, T=10, seed=123):
+def simulate_spot_paths_dc_fc(S0_dc_fc, sigma, n_sims, T=10, seed=123):
     """
-    Lognormal spot simulation with zero drift (risk-neutral aside from rate parity built into forwards).
-    S_{t} = S_{t-1} * exp(sigma * epsilon_t), epsilon_t ~ N(0,1)
+    Lognormal spot simulation (zero drift):
+        S_t^{DC/FC} = S_{t-1}^{DC/FC} * exp(sigma * epsilon_t),  epsilon_t ~ N(0,1)
     """
     rng = np.random.default_rng(seed)
     paths = np.empty((n_sims, T+1), dtype=float)
-    paths[:, 0] = S0
+    paths[:, 0] = S0_dc_fc
     if sigma < 0:
         raise ValueError("Volatility must be non-negative.")
     for t in range(1, T+1):
@@ -90,99 +81,73 @@ def simulate_spot_paths(S0, sigma, n_sims, T=10, seed=123):
     return paths
 
 def compute_strategy_results_constant_hedge(
-    S_paths,
-    S0,
+    S_paths_dc_fc,
+    S0_dc_fc,
     DF_d_0, DF_f_0,
     r_d, r_f,
     costs_dc, revenue_fc,
     spread_bps,
     hedge_frac,
-    strategy="all_at_t0"
+    strategy="all_at_t0",
 ):
     """
     Compute PV results under a hedging strategy with a CONSTANT hedge fraction across years.
-
-    Inputs
-    ------
-    S_paths : (n_sims, T+1) simulated spot paths (FC/DC)
-    S0      : scalar initial spot S_0 (FC/DC)
-    DF_d_0  : domestic discount factors at time 0, length T+1
-    DF_f_0  : foreign discount factors at time 0, length T+1 (kept for extensibility)
-    r_d, r_f: single annual domestic/foreign rates (constants, used for forwards)
-    costs_dc: length T, DOM cash costs each year (already in DC)
-    revenue_fc: length T, FC revenues each year
-    spread_bps: forward bid-ask spread in basis points
-    hedge_frac: scalar in [0,1], fraction of each year's revenue to hedge
-    strategy : "all_at_t0" or "roll_one_year"
-
-    Returns
-    -------
-    Dict with per-simulation PVs and summary stats.
+    All rates are DC/FC; FC revenue converts to DC via multiplication by a DC/FC rate.
     """
-    n_sims = S_paths.shape[0]
+    n_sims = S_paths_dc_fc.shape[0]
     T = 10
-    DF_d = DF_d_0  # alias
+    DF_d = DF_d_0
 
-    # Containers for yearly DC revenue/cost across simulations
     dc_revenue_t = np.zeros((n_sims, T), dtype=float)
     dc_costs_t   = np.zeros((n_sims, T), dtype=float)
 
     h = float(hedge_frac)
-    h = min(max(h, 0.0), 1.0)  # clamp to [0,1]
+    h = min(max(h, 0.0), 1.0)
 
     if strategy == "all_at_t0":
-        # At t=0, lock the hedged portion of each year's revenue at F_{0->t}
+        # At t=0, lock the hedged portion of each year's revenue at F_{0->t}^{DC/FC} (same for all sims)
         for t in range(1, T+1):
-            # Forward FC/DC based on S0 (scalar)
-            F_fc_dc_0t = forward_fc_per_dc_constant_rate(S0, r_d, r_f, 0, t)
-            bid_dc_fc, _ = dc_per_fc_bid_ask_from_fc_per_dc(F_fc_dc_0t, spread_bps)
+            F_dc_fc_0t = forward_dc_per_fc_constant_rate(S0_dc_fc, r_d, r_f, 0, t)
+            bid_dc_fc, _ = dc_per_fc_bid_ask_from_mid(F_dc_fc_0t, spread_bps)
 
             hedged_fc   = h * revenue_fc[t-1]
             unhedged_fc = (1.0 - h) * revenue_fc[t-1]
 
-            # Hedged portion converts at forward's DC/FC bid (same for all sims because S0 is scalar)
+            # Hedged converts at forward BID (DC/FC)
             dc_from_forward = hedged_fc * bid_dc_fc
 
-            # Unhedged portion converts at spot S_t (varies by sim)
-            S_t = S_paths[:, t]
-            S_t_safe = np.maximum(S_t, 1e-12)
-            dc_from_unhedged = unhedged_fc / S_t_safe
+            # Unhedged converts at spot S_t^{DC/FC} pathwise
+            S_t_dc_fc = np.maximum(S_paths_dc_fc[:, t], 1e-12)
+            dc_from_unhedged = unhedged_fc * S_t_dc_fc
 
             dc_revenue_t[:, t-1] = dc_from_forward + dc_from_unhedged
 
     elif strategy == "roll_one_year":
-        # Each year t-1, lock the hedged portion for year t via a 1y forward
-        num = (1.0 + float(r_d))
-        den = (1.0 + float(r_f))
-        if den <= 0:
-            den = 1e-12
+        # Each year t−1, hedge year t using 1y forward: F_{t-1->t}^{DC/FC} = S_{t-1} * (1+r_f)/(1+r_d)
+        ratio = (1.0 + float(r_f)) / max(1e-12, (1.0 + float(r_d)))
         for t in range(1, T+1):
             hedged_fc   = h * revenue_fc[t-1]
             unhedged_fc = (1.0 - h) * revenue_fc[t-1]
 
-            S_prev = S_paths[:, t-1]
-            # 1y forward FC/DC for each path: F = S_{t-1} * (1+r_d)/(1+r_f)
-            F_fc_dc_prev_t = S_prev * (num / den)
-            mid_dc_fc = 1.0 / F_fc_dc_prev_t
-            s = max(0.0, float(spread_bps)) / 10000.0
-            bid_dc_fc = mid_dc_fc * (1.0 - s / 2.0)
+            S_prev_dc_fc = S_paths_dc_fc[:, t-1]
+            F_dc_fc_prev_t_mid = S_prev_dc_fc * ratio
+            bid_dc_fc, _ = dc_per_fc_bid_ask_from_mid(F_dc_fc_prev_t_mid, spread_bps)
 
             dc_from_forward = hedged_fc * bid_dc_fc
 
-            S_t = S_paths[:, t]
-            S_t_safe = np.maximum(S_t, 1e-12)
-            dc_from_unhedged = unhedged_fc / S_t_safe
+            S_t_dc_fc = np.maximum(S_paths_dc_fc[:, t], 1e-12)
+            dc_from_unhedged = unhedged_fc * S_t_dc_fc
 
             dc_revenue_t[:, t-1] = dc_from_forward + dc_from_unhedged
 
     else:
         raise ValueError("Unknown strategy option. Use 'all_at_t0' or 'roll_one_year'.")
 
-    # Deterministic DC costs each year (same across sims)
+    # Deterministic DC costs
     for t in range(1, T+1):
         dc_costs_t[:, t-1] = costs_dc[t-1]
 
-    # Present values (discount in domestic currency using DF_d)
+    # PVs in domestic currency
     pv_revenue_per_sim = np.sum(dc_revenue_t * DF_d[1:][None, :], axis=1)
     pv_cost_per_sim    = np.sum(dc_costs_t   * DF_d[1:][None, :], axis=1)
     pv_profit_per_sim  = pv_revenue_per_sim - pv_cost_per_sim
@@ -194,14 +159,12 @@ def compute_strategy_results_constant_hedge(
 
     def _nanstd(x):
         x = x[np.isfinite(x)]
-        if x.size <= 1:
-            return 0.0
+        if x.size <= 1: return 0.0
         return float(np.std(x, ddof=1))
 
     def _frac_negative(x):
         x = x[np.isfinite(x)]
-        if x.size == 0:
-            return float("nan")
+        if x.size == 0: return float("nan")
         return float(np.mean(x < 0.0))
 
     return {
@@ -212,7 +175,7 @@ def compute_strategy_results_constant_hedge(
         "avg_pv_cost": float(np.nanmean(pv_cost_per_sim)) if np.isfinite(pv_cost_per_sim).any() else float("nan"),
         "avg_pv_profit": float(np.nanmean(pv_profit_per_sim)) if np.isfinite(pv_profit_per_sim).any() else float("nan"),
         "std_pv_profit": _nanstd(pv_profit_per_sim),
-        "frac_neg_profit": _frac_negative(pv_profit_per_sim),  # NEW: fraction of negative PV profits
+        "frac_neg_profit": _frac_negative(pv_profit_per_sim),
     }
 
 # ------------------------------
@@ -220,16 +183,16 @@ def compute_strategy_results_constant_hedge(
 # ------------------------------
 
 st.set_page_config(page_title="Currency Risk Hedging Simulator", layout="wide")
-st.title("💱 Currency Risk Hedging Simulator")
+st.title("💱 Currency Risk Hedging Simulator (DC/FC)")
 
 st.write(
-    "Rates and spots are shown as **FOREIGN per 1 DOMESTIC (FC/DC)**. "
-    "To convert foreign amount (FC) to domestic (DC), divide by the rate."
+    "All FX rates are **DOMESTIC per 1 FOREIGN (DC/FC)**. "
+    "**To convert foreign amount (FC) to domestic (DC), multiply:** DC = FC × (DC/FC)."
 )
 
 # Sidebar controls
 st.sidebar.header("Simulation Controls")
-S0 = st.sidebar.number_input("Current spot S₀ (FOREIGN per DOMESTIC)", min_value=1e-9, value=0.95, step=0.01, format="%.6f")
+S0 = st.sidebar.number_input("Current spot S₀ (DC per 1 FC)", min_value=1e-9, value=1.05, step=0.01, format="%.6f")
 sigma_input = st.sidebar.number_input("Annual volatility σ (percent, log spot)", min_value=0.0, value=10.0, step=0.5)
 sigma = sigma_input / 100.0
 spread_bps = st.sidebar.number_input("Forward bid-ask spread (basis points)", min_value=0.0, value=25.0, step=1.0)
@@ -252,15 +215,15 @@ if (1.0 + r_d) <= 0.0 or (1.0 + r_f) <= 0.0:
     st.error("Rates must be greater than -100%. Please adjust r_d and r_f.")
     st.stop()
 
-# Build discount factors from CONSTANT rates (length 11 for t=0..10)
+# Discount factors (t=0..10)
 DF_d_0 = make_discount_factors_constant(r_d, T=10)
 DF_f_0 = make_discount_factors_constant(r_f, T=10)  # kept for completeness/extensibility
 
 # ------------------------------
-# Cash flows (single, combined editor; years 1–10 only)
+# Cash flows (years 1–10 only)
 # ------------------------------
 st.subheader("Cash Flows")
-st.caption("Costs in DOM, Revenues in FOR (foreign currency). Provide amounts for years **1–10**.")
+st.caption("Costs in DOM, Revenues in FOR. Provide amounts for years **1–10**.")
 
 years = list(range(1, 11))
 cash_df = pd.DataFrame({
@@ -270,7 +233,6 @@ cash_df = pd.DataFrame({
 })
 cash_df = st.data_editor(cash_df, num_rows="fixed", use_container_width=True)
 
-# Extract arrays (no year 0 present by construction)
 costs_dc   = cash_df["Cost (DOM)"].to_numpy(dtype=float)
 revenue_fc = cash_df["Revenue (FOR)"].to_numpy(dtype=float)
 
@@ -278,52 +240,52 @@ revenue_fc = cash_df["Revenue (FOR)"].to_numpy(dtype=float)
 tabs = st.tabs(["Compare Constant-Fraction Strategies"])
 
 with tabs[0]:
-    st.markdown("### Constant Hedge Fraction (h) — Strategy Comparison")
+    st.markdown("### Constant Hedge Fraction (h) — Strategy Comparison (DC/FC)")
     st.caption(
-        "- **Unhedged (h=0)**: 100% converts at spot S_t. (Forward spreads/strategy irrelevant.)\n"
-        "- **Hedge-all-at-0**: for each year t, hedge `h × revenue_t` at t=0 using F₀,ₜ = S₀ × ((1+r_d)^t / (1+r_f)^t); "
-        "the remaining (1−h) converts at spot S_t.\n"
-        "- **Roll 1-Year**: each year t−1, hedge `h × revenue_t` for year t using F_{t-1,t} = S_{t-1} × (1+r_d)/(1+r_f); "
-        "the remaining (1−h) converts at spot S_t."
+        "- **Unhedged (h=0)**: 100% converts at spot S_t (DC/FC).  \n"
+        "- **Hedge-all-at-0**: for each year t, hedge `h × revenue_t` at t=0 using "
+        "F₀→t = S₀ × ((1+r_f)^t / (1+r_d)^t); the remaining (1−h) converts at spot S_t.  \n"
+        "- **Roll 1-Year**: each year t−1, hedge `h × revenue_t` for year t using "
+        "F_{t-1→t} = S_{t-1} × (1+r_f)/(1+r_d); the remaining (1−h) converts at spot S_t."
     )
 
     if st.button("Simulate"):
-        S_paths = simulate_spot_paths(S0=S0, sigma=sigma, n_sims=n_sims, T=10, seed=seed)
+        S_paths = simulate_spot_paths_dc_fc(S0_dc_fc=S0, sigma=sigma, n_sims=n_sims, T=10, seed=seed)
 
-        # --- Strategy A: Hedge-all-at-0 (constant h) ---
+        # Strategy A: Hedge-all-at-0
         res_A = compute_strategy_results_constant_hedge(
-            S_paths=S_paths, S0=S0,
+            S_paths_dc_fc=S_paths, S0_dc_fc=S0,
             DF_d_0=DF_d_0, DF_f_0=DF_f_0,
             r_d=r_d, r_f=r_f,
             costs_dc=costs_dc, revenue_fc=revenue_fc,
             spread_bps=spread_bps,
             hedge_frac=hedge_frac,
-            strategy="all_at_t0"
+            strategy="all_at_t0",
         )
 
-        # --- Strategy B: Roll 1-Year (constant h) ---
+        # Strategy B: Roll 1-Year
         res_B = compute_strategy_results_constant_hedge(
-            S_paths=S_paths, S0=S0,
+            S_paths_dc_fc=S_paths, S0_dc_fc=S0,
             DF_d_0=DF_d_0, DF_f_0=DF_f_0,
             r_d=r_d, r_f=r_f,
             costs_dc=costs_dc, revenue_fc=revenue_fc,
             spread_bps=spread_bps,
             hedge_frac=hedge_frac,
-            strategy="roll_one_year"
+            strategy="roll_one_year",
         )
 
-        # --- Unhedged baseline (h = 0) ---
+        # Unhedged baseline (h = 0)
         res_U = compute_strategy_results_constant_hedge(
-            S_paths=S_paths, S0=S0,
+            S_paths_dc_fc=S_paths, S0_dc_fc=S0,
             DF_d_0=DF_d_0, DF_f_0=DF_f_0,
             r_d=r_d, r_f=r_f,
             costs_dc=costs_dc, revenue_fc=revenue_fc,
             spread_bps=spread_bps,
-            hedge_frac=0.0,                 # h=0 → fully unhedged
-            strategy="all_at_t0"            # strategy irrelevant when h=0
+            hedge_frac=0.0,
+            strategy="all_at_t0",  # irrelevant when h=0
         )
 
-        # Summary table (now includes fraction of negative PV profits)
+        # Summary (includes loss fractions)
         summary = pd.DataFrame({
             "Strategy": ["Unhedged (h=0)", "Hedge-all-at-0", "Roll 1-Year"],
             "Hedge Fraction h": [0.0, hedge_frac, hedge_frac],
@@ -331,28 +293,24 @@ with tabs[0]:
             "Avg PV Cost (DOM)":    [res_U["avg_pv_cost"],    res_A["avg_pv_cost"],    res_B["avg_pv_cost"]],
             "Avg PV Profit (DOM)":  [res_U["avg_pv_profit"],  res_A["avg_pv_profit"],  res_B["avg_pv_profit"]],
             "StdDev PV Profit":     [res_U["std_pv_profit"],  res_A["std_pv_profit"],  res_B["std_pv_profit"]],
-            "Frac(PV Profit < 0)":  [res_U["frac_neg_profit"], res_A["frac_neg_profit"], res_B["frac_neg_profit"]],  # NEW
+            "Frac(PV Profit < 0)":  [res_U["frac_neg_profit"], res_A["frac_neg_profit"], res_B["frac_neg_profit"]],
         })
 
-        # Nice formatting for display
-        fmt_summary = summary.copy()
-        fmt_summary["Hedge Fraction h"]   = (fmt_summary["Hedge Fraction h"]*100.0).map(lambda x: f"{x:.1f}%")
-        fmt_summary["Avg PV Revenue (DOM)"] = fmt_summary["Avg PV Revenue (DOM)"].map(lambda x: f"{x:,.2f}")
-        fmt_summary["Avg PV Cost (DOM)"]    = fmt_summary["Avg PV Cost (DOM)"].map(lambda x: f"{x:,.2f}")
-        fmt_summary["Avg PV Profit (DOM)"]  = fmt_summary["Avg PV Profit (DOM)"].map(lambda x: f"{x:,.2f}")
-        fmt_summary["StdDev PV Profit"]     = fmt_summary["StdDev PV Profit"].map(lambda x: f"{x:,.2f}")
-        fmt_summary["Frac(PV Profit < 0)"]  = (fmt_summary["Frac(PV Profit < 0)"]*100.0).map(lambda x: f"{x:.1f}%")
+        fmt = summary.copy()
+        fmt["Hedge Fraction h"]      = (fmt["Hedge Fraction h"]*100.0).map(lambda x: f"{x:.1f}%")
+        for col in ["Avg PV Revenue (DOM)", "Avg PV Cost (DOM)", "Avg PV Profit (DOM)", "StdDev PV Profit"]:
+            fmt[col] = fmt[col].map(lambda x: f"{x:,.2f}")
+        fmt["Frac(PV Profit < 0)"]   = (fmt["Frac(PV Profit < 0)"]*100.0).map(lambda x: f"{x:.1f}%")
 
-        st.dataframe(fmt_summary, use_container_width=True)
+        st.dataframe(fmt, use_container_width=True)
 
         # Histograms
-        st.markdown("#### PV Profit Distribution")
-        plot_list = [
+        st.markdown("#### PV Profit Distribution (DC)")
+        for title, arr in [
             ("Unhedged (h=0): PV Profit (DOM)", res_U["pv_profit_per_sim"]),
             ("Hedge-all-at-0: PV Profit (DOM)", res_A["pv_profit_per_sim"]),
             ("Roll 1-Year: PV Profit (DOM)",    res_B["pv_profit_per_sim"]),
-        ]
-        for title, arr in plot_list:
+        ]:
             finite = arr[np.isfinite(arr)]
             if finite.size == 0:
                 st.warning(f"No finite values to plot for '{title}'. Check inputs (rates > -100%, etc.).")
