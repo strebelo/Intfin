@@ -317,10 +317,10 @@ with tabs[0]:
                 plt.title(title)
                 st.pyplot(fig)
 
-st.markdown("---")
-st.markdown(
-    "- **Student inputs**: one **domestic rate r_d**, one **foreign rate r_f** (annual, constant), and a **single hedge fraction h** applied to every year.\n"
-    "- **Mechanics**: forwards are synthetic via covered interest parity; hedged share uses forward DC/FC (bid), unhedged share converts at the realized spot.\n"
-    "- **Validity checks**: rates must be greater than **-100%**; spot must be positive; spread non-negative.\n"
-    "- **Numerical guards**: tiny floors avoid division by zero; charts warn if inputs produce non-finite results."
-)
+# st.markdown("---")
+# st.markdown(
+#     "- **Student inputs**: one **domestic rate r_d**, one **foreign rate r_f** (annual, constant), and a **single hedge fraction h** applied to every year.\n"
+#     "- **Mechanics**: forwards are synthetic via covered interest parity; hedged share uses forward DC/FC (bid), unhedged share converts at the realized spot.\n"
+#     "- **Validity checks**: rates must be greater than **-100%**; spot must be positive; spread non-negative.\n"
+#     "- **Numerical guards**: tiny floors avoid division by zero; charts warn if inputs produce non-finite results."
+# )
