@@ -1,6 +1,9 @@
 # ------------------------------
 # Currency Risk Hedging Simulator (Streamlit) — DC/FC Quoting
-# Constant Hedge Fraction with H-Sweep Frontiers and Tail Risk
+# Constant Hedge Fraction with Unhedged Baseline (h = 0)
+# + User-selectable time horizon T
+# + No Year column in the cash-flow table
+# + Button to plot std(Π) vs mean(Π) over h ∈ {0,10%,...,100%}
 # ------------------------------
 
 import numpy as np
@@ -12,7 +15,12 @@ import matplotlib.pyplot as plt
 # Helper functions
 # ------------------------------
 
-def make_discount_factors_constant(r: float, T: int = 10):
+def make_discount_factors_constant(r: float, T: int):
+    """
+    Build discount factors DF[0..T] from a single annual rate r (constant across maturities).
+        DF[0] = 1
+        DF[t] = 1 / (1 + r)^t
+    """
     DF = np.ones(T + 1, dtype=float)
     base = 1.0 + float(r)
     if base <= 0:
@@ -22,6 +30,11 @@ def make_discount_factors_constant(r: float, T: int = 10):
     return DF
 
 def forward_dc_per_fc_constant_rate(S_t_dc_fc, r_d, r_f, t, m):
+    """
+    Synthetic forward (DC/FC) from t to m using covered interest parity with CONSTANT rates:
+        F_{t->m}^{DC/FC} = S_t^{DC/FC} * ((1 + r_f)^(m - t) / (1 + r_d)^(m - t))
+    Requires m > t. Accepts scalar or vector S_t^{DC/FC}.
+    """
     if m <= t:
         raise ValueError("Forward maturity m must be greater than t.")
     horiz = m - t
@@ -32,12 +45,22 @@ def forward_dc_per_fc_constant_rate(S_t_dc_fc, r_d, r_f, t, m):
     return S_t_dc_fc * (num / den)
 
 def dc_per_fc_bid_ask_from_mid(mid_dc_fc, spread_bps):
+    """
+    Given a DC/FC forward MID and a symmetric spread in basis points, return (bid, ask) in DC/FC.
+      bid = mid * (1 - s/2),  ask = mid * (1 + s/2),  s = spread_bps / 10,000
+    Use BID when converting FC→DC (you receive bid).
+    """
     s = max(0.0, float(spread_bps)) / 10000.0
     bid = mid_dc_fc * (1.0 - s / 2.0)
     ask = mid_dc_fc * (1.0 + s / 2.0)
     return bid, ask
 
-def simulate_spot_paths_dc_fc(S0_dc_fc, sigma, n_sims, T=10, seed=123):
+def simulate_spot_paths_dc_fc(S0_dc_fc, sigma, n_sims, T, seed=123):
+    """
+    Lognormal spot simulation (zero drift):
+        S_t^{DC/FC} = S_{t-1}^{DC/FC} * exp(sigma * epsilon_t),  epsilon_t ~ N(0,1)
+    Returns array (n_sims, T+1)
+    """
     rng = np.random.default_rng(seed)
     paths = np.empty((n_sims, T+1), dtype=float)
     paths[:, 0] = S0_dc_fc
@@ -58,8 +81,12 @@ def compute_strategy_results_constant_hedge(
     hedge_frac,
     strategy="all_at_t0",
 ):
-    n_sims = S_paths_dc_fc.shape[0]
-    T = 10
+    """
+    Compute PV results under a hedging strategy with a CONSTANT hedge fraction across years.
+    All rates are DC/FC; FC revenue converts to DC via multiplication by a DC/FC rate.
+    """
+    n_sims, T_plus_1 = S_paths_dc_fc.shape
+    T = T_plus_1 - 1
     DF_d = DF_d_0
 
     dc_revenue_t = np.zeros((n_sims, T), dtype=float)
@@ -69,6 +96,7 @@ def compute_strategy_results_constant_hedge(
     h = min(max(h, 0.0), 1.0)
 
     if strategy == "all_at_t0":
+        # At t=0, lock the hedged portion of each year's revenue at F_{0->t}^{DC/FC} (same for all sims)
         for t in range(1, T+1):
             F_dc_fc_0t = forward_dc_per_fc_constant_rate(S0_dc_fc, r_d, r_f, 0, t)
             bid_dc_fc, _ = dc_per_fc_bid_ask_from_mid(F_dc_fc_0t, spread_bps)
@@ -76,13 +104,14 @@ def compute_strategy_results_constant_hedge(
             hedged_fc   = h * revenue_fc[t-1]
             unhedged_fc = (1.0 - h) * revenue_fc[t-1]
 
-            dc_from_forward   = hedged_fc * bid_dc_fc
-            S_t_dc_fc         = np.maximum(S_paths_dc_fc[:, t], 1e-12)
-            dc_from_unhedged  = unhedged_fc * S_t_dc_fc
+            dc_from_forward  = hedged_fc * bid_dc_fc
+            S_t_dc_fc        = np.maximum(S_paths_dc_fc[:, t], 1e-12)
+            dc_from_unhedged = unhedged_fc * S_t_dc_fc
 
             dc_revenue_t[:, t-1] = dc_from_forward + dc_from_unhedged
 
     elif strategy == "roll_one_year":
+        # Each year t−1, hedge year t using 1y forward: F_{t-1->t}^{DC/FC} = S_{t-1} * (1+r_f)/(1+r_d)
         ratio = (1.0 + float(r_f)) / max(1e-12, (1.0 + float(r_d)))
         for t in range(1, T+1):
             hedged_fc   = h * revenue_fc[t-1]
@@ -92,22 +121,25 @@ def compute_strategy_results_constant_hedge(
             F_dc_fc_prev_t_mid = S_prev_dc_fc * ratio
             bid_dc_fc, _       = dc_per_fc_bid_ask_from_mid(F_dc_fc_prev_t_mid, spread_bps)
 
-            dc_from_forward   = hedged_fc * bid_dc_fc
-            S_t_dc_fc         = np.maximum(S_paths_dc_fc[:, t], 1e-12)
-            dc_from_unhedged  = unhedged_fc * S_t_dc_fc
+            dc_from_forward  = hedged_fc * bid_dc_fc
+            S_t_dc_fc        = np.maximum(S_paths_dc_fc[:, t], 1e-12)
+            dc_from_unhedged = unhedged_fc * S_t_dc_fc
 
             dc_revenue_t[:, t-1] = dc_from_forward + dc_from_unhedged
 
     else:
         raise ValueError("Unknown strategy option. Use 'all_at_t0' or 'roll_one_year'.")
 
+    # Deterministic DC costs
     for t in range(1, T+1):
         dc_costs_t[:, t-1] = costs_dc[t-1]
 
+    # PVs in domestic currency
     pv_revenue_per_sim = np.sum(dc_revenue_t * DF_d[1:][None, :], axis=1)
     pv_cost_per_sim    = np.sum(dc_costs_t   * DF_d[1:][None, :], axis=1)
     pv_profit_per_sim  = pv_revenue_per_sim - pv_cost_per_sim
 
+    # Clean non-finites
     pv_revenue_per_sim = np.where(np.isfinite(pv_revenue_per_sim), pv_revenue_per_sim, np.nan)
     pv_cost_per_sim    = np.where(np.isfinite(pv_cost_per_sim),    pv_cost_per_sim,    np.nan)
     pv_profit_per_sim  = np.where(np.isfinite(pv_profit_per_sim),  pv_profit_per_sim,  np.nan)
@@ -133,25 +165,11 @@ def compute_strategy_results_constant_hedge(
         "frac_neg_profit": _frac_negative(pv_profit_per_sim),
     }
 
-# --- Risk metrics for frontiers ---
-def var_es(arr, alpha=0.95):
-    finite = arr[np.isfinite(arr)]
-    if finite.size == 0:
-        return np.nan, np.nan
-    q = np.nanpercentile(finite, (1-alpha)*100.0)  # left-tail quantile (e.g., 5th pct)
-    tail = finite[finite <= q]
-    VaR = -q
-    ES  = -np.nanmean(tail) if tail.size else np.nan
-    return VaR, ES
-
-def sharpe_like(mean, std):
-    return mean / std if (std and np.isfinite(std) and std > 0) else np.nan
-
 # ------------------------------
 # Streamlit UI
 # ------------------------------
 
-st.set_page_config(page_title="Currency Risk Hedging Simulator (DC/FC)", layout="wide")
+st.set_page_config(page_title="Currency Risk Hedging Simulator", layout="wide")
 st.title("💱 Currency Risk Hedging Simulator (DC/FC)")
 
 st.write(
@@ -167,6 +185,10 @@ sigma = sigma_input / 100.0
 spread_bps = st.sidebar.number_input("Forward bid-ask spread (basis points)", min_value=0.0, value=25.0, step=1.0)
 n_sims = int(st.sidebar.number_input("Number of simulations", min_value=1, value=5000, step=100))
 seed = int(st.sidebar.number_input("Random seed", min_value=0, value=42, step=1))
+
+# New: user-selectable time horizon T
+st.sidebar.markdown("---")
+T = int(st.sidebar.number_input("Time horizon T (years)", min_value=1, max_value=50, value=10, step=1))
 
 st.sidebar.markdown("---")
 st.sidebar.header("Inputs")
@@ -184,29 +206,34 @@ if (1.0 + r_d) <= 0.0 or (1.0 + r_f) <= 0.0:
     st.error("Rates must be greater than -100%. Please adjust r_d and r_f.")
     st.stop()
 
-# Discount factors (t=0..10)
-DF_d_0 = make_discount_factors_constant(r_d, T=10)
-DF_f_0 = make_discount_factors_constant(r_f, T=10)
+# Discount factors (t=0..T)
+DF_d_0 = make_discount_factors_constant(r_d, T=T)
+DF_f_0 = make_discount_factors_constant(r_f, T=T)  # kept for completeness/extensibility
 
 # ------------------------------
-# Cash flows (years 1–10 only)
+# Cash flows (years 1..T) — NO 'Year' column
 # ------------------------------
 st.subheader("Cash Flows")
-st.caption("Costs in DOM, Revenues in FOR. Provide amounts for years **1–10**.")
+st.caption(f"Costs in DOM, Revenues in FOR. Provide amounts for years **1–{T}** (row index shows the year).")
 
-years = list(range(1, 11))
 cash_df = pd.DataFrame({
-    "Year": years,
-    "Cost (DOM)": [0.0]*10,
-    "Revenue (FOR)": [0.0]*10,
+    "Cost (DOM)": [0.0]*T,
+    "Revenue (FOR)": [0.0]*T,
 })
-cash_df = st.data_editor(cash_df, num_rows="fixed", use_container_width=True)
+cash_df.index = pd.Index(range(1, T+1), name=f"Year (1–{T})")  # visual index only
 
+cash_df = st.data_editor(
+    cash_df,
+    num_rows="fixed",
+    use_container_width=True,
+)
+
+# Extract arrays
 costs_dc   = cash_df["Cost (DOM)"].to_numpy(dtype=float)
 revenue_fc = cash_df["Revenue (FOR)"].to_numpy(dtype=float)
 
 # Tabs
-tabs = st.tabs(["Compare Constant-Fraction Strategies", "H-sweep (frontiers)"])
+tabs = st.tabs(["Compare Constant-Fraction Strategies"])
 
 with tabs[0]:
     st.markdown("### Constant Hedge Fraction (h) — Strategy Comparison (DC/FC)")
@@ -218,8 +245,14 @@ with tabs[0]:
         "F_{t-1→t} = S_{t-1} × (1+r_f)/(1+r_d); the remaining (1−h) converts at spot S_t."
     )
 
-    if st.button("Simulate"):
-        S_paths = simulate_spot_paths_dc_fc(S0_dc_fc=S0, sigma=sigma, n_sims=n_sims, T=10, seed=seed)
+    colA, colB = st.columns([1,1])
+    with colA:
+        simulate_btn = st.button("Simulate")
+    with colB:
+        hsweep_btn = st.button("Plot σ vs Mean (H-sweep)")
+
+    if simulate_btn:
+        S_paths = simulate_spot_paths_dc_fc(S0_dc_fc=S0, sigma=sigma, n_sims=n_sims, T=T, seed=seed)
 
         # Strategy A: Hedge-all-at-0
         res_A = compute_strategy_results_constant_hedge(
@@ -251,47 +284,25 @@ with tabs[0]:
             costs_dc=costs_dc, revenue_fc=revenue_fc,
             spread_bps=spread_bps,
             hedge_frac=0.0,
-            strategy="all_at_t0",
+            strategy="all_at_t0",  # irrelevant when h=0
         )
 
-        # Summary table with tail risk
-        def frac_below(arr, thr=0.0):
-            finite = arr[np.isfinite(arr)]
-            return float(np.mean(finite < thr)) if finite.size else np.nan
-
-        # Unhedged reference variance for Hedge Effectiveness
-        var_U = np.nanvar(res_U["pv_profit_per_sim"], ddof=1)
-
-        def hedge_effectiveness(arr):
-            v = np.nanvar(arr, ddof=1)
-            return 1 - (v/var_U) if var_U > 0 else np.nan
-
-        def enrich(res):
-            VaR95, ES95 = var_es(res["pv_profit_per_sim"], alpha=0.95)
-            return {
-                "Avg PV Revenue (DOM)": res["avg_pv_revenue"],
-                "Avg PV Cost (DOM)":    res["avg_pv_cost"],
-                "Avg PV Profit (DOM)":  res["avg_pv_profit"],
-                "StdDev PV Profit":     res["std_pv_profit"],
-                "Frac(PV Profit < 0)":  frac_below(res["pv_profit_per_sim"], 0.0),
-                "VaR95 (loss)":         VaR95,
-                "CVaR95 (loss)":        ES95,
-                "Sharpe":               sharpe_like(res["avg_pv_profit"], res["std_pv_profit"]),
-                "HE vs Unhedged":       hedge_effectiveness(res["pv_profit_per_sim"]),
-            }
-
-        summary = pd.DataFrame.from_dict({
-            "Unhedged (h=0)":   enrich(res_U),
-            "Hedge-all-at-0":   enrich(res_A),
-            "Roll 1-Year":      enrich(res_B),
-        }, orient="index").reset_index().rename(columns={"index":"Strategy"})
+        # Summary (includes loss fractions)
+        summary = pd.DataFrame({
+            "Strategy": ["Unhedged (h=0)", "Hedge-all-at-0", "Roll 1-Year"],
+            "Hedge Fraction h": [0.0, hedge_frac, hedge_frac],
+            "Avg PV Revenue (DOM)": [res_U["avg_pv_revenue"], res_A["avg_pv_revenue"], res_B["avg_pv_revenue"]],
+            "Avg PV Cost (DOM)":    [res_U["avg_pv_cost"],    res_A["avg_pv_cost"],    res_B["avg_pv_cost"]],
+            "Avg PV Profit (DOM)":  [res_U["avg_pv_profit"],  res_A["avg_pv_profit"],  res_B["avg_pv_profit"]],
+            "StdDev PV Profit":     [res_U["std_pv_profit"],  res_A["std_pv_profit"],  res_B["std_pv_profit"]],
+            "Frac(PV Profit < 0)":  [res_U["frac_neg_profit"], res_A["frac_neg_profit"], res_B["frac_neg_profit"]],
+        })
 
         fmt = summary.copy()
-        for col in ["Avg PV Revenue (DOM)", "Avg PV Cost (DOM)", "Avg PV Profit (DOM)", "StdDev PV Profit", "VaR95 (loss)", "CVaR95 (loss)"]:
+        fmt["Hedge Fraction h"]      = (fmt["Hedge Fraction h"]*100.0).map(lambda x: f"{x:.1f}%")
+        for col in ["Avg PV Revenue (DOM)", "Avg PV Cost (DOM)", "Avg PV Profit (DOM)", "StdDev PV Profit"]:
             fmt[col] = fmt[col].map(lambda x: f"{x:,.2f}")
-        fmt["Frac(PV Profit < 0)"] = (summary["Frac(PV Profit < 0)"]*100.0).map(lambda x: f"{x:.1f}%")
-        fmt["Sharpe"]              = summary["Sharpe"].map(lambda x: f"{x:.2f}")
-        fmt["HE vs Unhedged"]      = summary["HE vs Unhedged"].map(lambda x: f"{x:.1%}" if pd.notnull(x) else "—")
+        fmt["Frac(PV Profit < 0)"]   = (fmt["Frac(PV Profit < 0)"]*100.0).map(lambda x: f"{x:.1f}%")
 
         st.dataframe(fmt, use_container_width=True)
 
@@ -311,18 +322,9 @@ with tabs[0]:
                 plt.title(title)
                 st.pyplot(fig)
 
-with tabs[1]:
-    st.markdown("### H-sweep Frontiers (DC/FC)")
-    st.caption(
-        "For **h ∈ {0, 10%, …, 100%}**, we plot:\n"
-        "- **(σ, mean)** of PV profit, and\n"
-        "- **(CVaR₉₅, mean)** of PV profit (CVaR shown as a positive loss—lower is better).\n"
-        "For each strategy, we highlight **min-CVaR h** and **max-Sharpe h**."
-    )
-
-    if st.button("Run H-sweep"):
-        S_paths = simulate_spot_paths_dc_fc(S0_dc_fc=S0, sigma=sigma, n_sims=n_sims, T=10, seed=seed)
-
+    # --- σ vs Mean plot over h-grid (respects T) ---
+    if hsweep_btn:
+        S_paths = simulate_spot_paths_dc_fc(S0_dc_fc=S0, sigma=sigma, n_sims=n_sims, T=T, seed=seed)
         hs = np.linspace(0.0, 1.0, 11)  # 0, 0.1, ..., 1.0
         strategies = [
             ("Hedge-all-at-0", "all_at_t0"),
@@ -341,73 +343,17 @@ with tabs[1]:
                     hedge_frac=h,
                     strategy=strat,
                 )
-                mean = res["avg_pv_profit"]
-                std  = res["std_pv_profit"]
-                _, ES95 = var_es(res["pv_profit_per_sim"], alpha=0.95)
-                sh = sharpe_like(mean, std)
-                rows.append({"h": h, "mean": mean, "std": std, "ES95_loss": ES95, "sharpe": sh})
+                rows.append({"h": h, "mean": res["avg_pv_profit"], "std": res["std_pv_profit"]})
+
             frontier = pd.DataFrame(rows)
 
-            # Identify min-CVaR (ES95) and max-Sharpe points
-            idx_min_es = int(frontier["ES95_loss"].idxmin()) if frontier["ES95_loss"].notna().any() else None
-            idx_max_sh = int(frontier["sharpe"].idxmax())    if frontier["sharpe"].notna().any() else None
-
-            # --- Plot (σ, mean) ---
-            fig1 = plt.figure()
+            fig = plt.figure()
             plt.scatter(frontier["std"], frontier["mean"])
-            if idx_max_sh is not None:
-                plt.scatter(frontier.loc[idx_max_sh, "std"], frontier.loc[idx_max_sh, "mean"], s=120, marker="*", label="Max Sharpe h")
-            if idx_min_es is not None:
-                plt.scatter(frontier.loc[idx_min_es, "std"], frontier.loc[idx_min_es, "mean"], s=120, marker="^", label="Min CVaR h")
             for _, r in frontier.iterrows():
                 plt.annotate(f"{int(r['h']*100)}%", (r["std"], r["mean"]), textcoords="offset points", xytext=(5,3))
             plt.xlabel("σ(PV Profit)")
             plt.ylabel("Mean PV Profit")
-            plt.title(f"{label}: Frontier (σ, mean) over h")
-            if idx_max_sh is not None or idx_min_es is not None:
-                plt.legend()
-            st.pyplot(fig1)
-
-            # --- Plot (CVaR95, mean) ---
-            fig2 = plt.figure()
-            plt.scatter(frontier["ES95_loss"], frontier["mean"])
-            if idx_max_sh is not None:
-                plt.scatter(frontier.loc[idx_max_sh, "ES95_loss"], frontier.loc[idx_max_sh, "mean"], s=120, marker="*", label="Max Sharpe h")
-            if idx_min_es is not None:
-                plt.scatter(frontier.loc[idx_min_es, "ES95_loss"], frontier.loc[idx_min_es, "mean"], s=120, marker="^", label="Min CVaR h")
-            for _, r in frontier.iterrows():
-                plt.annotate(f"{int(r['h']*100)}%", (r["ES95_loss"], r["mean"]), textcoords="offset points", xytext=(5,3))
-            plt.xlabel("CVaR95 (loss)")
-            plt.ylabel("Mean PV Profit")
-            plt.title(f"{label}: Frontier (CVaR95, mean) over h")
-            if idx_max_sh is not None or idx_min_es is not None:
-                plt.legend()
-            st.pyplot(fig2)
-
-            # Show the key h values in a small table
-            summary_rows = []
-            if idx_min_es is not None:
-                summary_rows.append({
-                    "Strategy": label,
-                    "Metric": "Min CVaR95 h",
-                    "h": f"{int(frontier.loc[idx_min_es,'h']*100)}%",
-                    "Mean": f"{frontier.loc[idx_min_es,'mean']:,.2f}",
-                    "σ": f"{frontier.loc[idx_min_es,'std']:,.2f}",
-                    "CVaR95": f"{frontier.loc[idx_min_es,'ES95_loss']:,.2f}",
-                    "Sharpe": f"{frontier.loc[idx_min_es,'sharpe']:.2f}" if np.isfinite(frontier.loc[idx_min_es,'sharpe']) else "—",
-                })
-            if idx_max_sh is not None:
-                summary_rows.append({
-                    "Strategy": label,
-                    "Metric": "Max Sharpe h",
-                    "h": f"{int(frontier.loc[idx_max_sh,'h']*100)}%",
-                    "Mean": f"{frontier.loc[idx_max_sh,'mean']:,.2f}",
-                    "σ": f"{frontier.loc[idx_max_sh,'std']:,.2f}",
-                    "CVaR95": f"{frontier.loc[idx_max_sh,'ES95_loss']:,.2f}",
-                    "Sharpe": f"{frontier.loc[idx_max_sh,'sharpe']:.2f}" if np.isfinite(frontier.loc[idx_max_sh,'sharpe']) else "—",
-                })
-            if summary_rows:
-                st.markdown("**Highlighted h values**")
-                st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
+            plt.title(f"{label}: Frontier (σ, mean) over h = 0…100% (T = {T})")
+            st.pyplot(fig)
 
 # End of file
