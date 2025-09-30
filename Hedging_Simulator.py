@@ -214,7 +214,7 @@ def compute_strategy_results_constant_hedge(
 # ------------------------------
 
 st.set_page_config(page_title="Currency Risk Hedging Simulator", layout="wide")
-st.title("💱 Currency Risk Hedging Simulator (Constant Hedge Fraction)")
+st.title("💱 Currency Risk Hedging Simulator")
 
 st.write(
     "Rates and spots are shown as **FOREIGN per 1 DOMESTIC (FC/DC)**. "
@@ -231,7 +231,7 @@ n_sims = int(st.sidebar.number_input("Number of simulations", min_value=1, value
 seed = int(st.sidebar.number_input("Random seed", min_value=0, value=42, step=1))
 
 st.sidebar.markdown("---")
-st.sidebar.header("Student Inputs")
+st.sidebar.header("Inputs")
 r_d_pct = st.sidebar.number_input("Domestic interest rate r_d (% per year)", value=5.0, step=0.25, format="%.4f")
 r_f_pct = st.sidebar.number_input("Foreign interest rate r_f  (% per year)", value=3.0, step=0.25, format="%.4f")
 hedge_frac_pct = st.sidebar.number_input("Hedge fraction of revenue h (% of each year)", min_value=0.0, max_value=100.0, value=50.0, step=1.0, format="%.1f")
