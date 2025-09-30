@@ -1,14 +1,13 @@
 # ------------------------------
 # Currency Risk Hedging Simulator (Streamlit) — Constant Hedge Fraction
-# with Unhedged Baseline (h = 0)
+# with Unhedged Baseline (h = 0) + Combined Cash-Flow Editor + Loss Fractions
 # ------------------------------
-# What changed vs. your previous version?
-# - Adds an explicit "Unhedged (h=0)" baseline alongside:
-#     (A) Hedge-all-at-0
-#     (B) Roll 1-Year
-# - Summary table and histograms include the unhedged distribution.
+# What changed vs. your version?
+# - Cash-flow table now covers ONLY years 1–10 (no "0→9" first line to delete).
+# - Costs & Revenues edited in a single table for convenience.
+# - Summary now reports Frac(PV Profit < 0) for Unhedged and both hedge strategies.
 #
-# Modeling assumptions:
+# Modeling assumptions (unchanged):
 # - Students choose a SINGLE hedge fraction h (0–100%) that applies to every year.
 # - No term structure: constant domestic and foreign annual rates r_d, r_f.
 # - Forwards via covered interest parity with constant rates:
@@ -199,6 +198,12 @@ def compute_strategy_results_constant_hedge(
             return 0.0
         return float(np.std(x, ddof=1))
 
+    def _frac_negative(x):
+        x = x[np.isfinite(x)]
+        if x.size == 0:
+            return float("nan")
+        return float(np.mean(x < 0.0))
+
     return {
         "pv_revenue_per_sim": pv_revenue_per_sim,
         "pv_cost_per_sim": pv_cost_per_sim,
@@ -207,6 +212,7 @@ def compute_strategy_results_constant_hedge(
         "avg_pv_cost": float(np.nanmean(pv_cost_per_sim)) if np.isfinite(pv_cost_per_sim).any() else float("nan"),
         "avg_pv_profit": float(np.nanmean(pv_profit_per_sim)) if np.isfinite(pv_profit_per_sim).any() else float("nan"),
         "std_pv_profit": _nanstd(pv_profit_per_sim),
+        "frac_neg_profit": _frac_negative(pv_profit_per_sim),  # NEW: fraction of negative PV profits
     }
 
 # ------------------------------
@@ -250,15 +256,23 @@ if (1.0 + r_d) <= 0.0 or (1.0 + r_f) <= 0.0:
 DF_d_0 = make_discount_factors_constant(r_d, T=10)
 DF_f_0 = make_discount_factors_constant(r_f, T=10)  # kept for completeness/extensibility
 
-# Cash flows
+# ------------------------------
+# Cash flows (single, combined editor; years 1–10 only)
+# ------------------------------
 st.subheader("Cash Flows")
-st.caption("Costs in DOM, Revenues in FOR (foreign currency). Provide amounts for years 1–10.")
-years = list(range(1, 11))
-costs_df = st.data_editor(pd.DataFrame({"Year": years, "Cost (DOM)": [0.0]*10}), num_rows="fixed", use_container_width=True)
-revs_df  = st.data_editor(pd.DataFrame({"Year": years, "Revenue (FOR)": [0.0]*10}), num_rows="fixed", use_container_width=True)
+st.caption("Costs in DOM, Revenues in FOR (foreign currency). Provide amounts for years **1–10**.")
 
-costs_dc   = costs_df["Cost (DOM)"].to_numpy(dtype=float)
-revenue_fc = revs_df["Revenue (FOR)"].to_numpy(dtype=float)
+years = list(range(1, 11))
+cash_df = pd.DataFrame({
+    "Year": years,
+    "Cost (DOM)": [0.0]*10,
+    "Revenue (FOR)": [0.0]*10,
+})
+cash_df = st.data_editor(cash_df, num_rows="fixed", use_container_width=True)
+
+# Extract arrays (no year 0 present by construction)
+costs_dc   = cash_df["Cost (DOM)"].to_numpy(dtype=float)
+revenue_fc = cash_df["Revenue (FOR)"].to_numpy(dtype=float)
 
 # Tabs
 tabs = st.tabs(["Compare Constant-Fraction Strategies"])
@@ -305,11 +319,11 @@ with tabs[0]:
             r_d=r_d, r_f=r_f,
             costs_dc=costs_dc, revenue_fc=revenue_fc,
             spread_bps=spread_bps,
-            hedge_frac=0.0,                 # key line (h=0)
+            hedge_frac=0.0,                 # h=0 → fully unhedged
             strategy="all_at_t0"            # strategy irrelevant when h=0
         )
 
-        # Summary table
+        # Summary table (now includes fraction of negative PV profits)
         summary = pd.DataFrame({
             "Strategy": ["Unhedged (h=0)", "Hedge-all-at-0", "Roll 1-Year"],
             "Hedge Fraction h": [0.0, hedge_frac, hedge_frac],
@@ -317,8 +331,19 @@ with tabs[0]:
             "Avg PV Cost (DOM)":    [res_U["avg_pv_cost"],    res_A["avg_pv_cost"],    res_B["avg_pv_cost"]],
             "Avg PV Profit (DOM)":  [res_U["avg_pv_profit"],  res_A["avg_pv_profit"],  res_B["avg_pv_profit"]],
             "StdDev PV Profit":     [res_U["std_pv_profit"],  res_A["std_pv_profit"],  res_B["std_pv_profit"]],
+            "Frac(PV Profit < 0)":  [res_U["frac_neg_profit"], res_A["frac_neg_profit"], res_B["frac_neg_profit"]],  # NEW
         })
-        st.dataframe(summary, use_container_width=True)
+
+        # Nice formatting for display
+        fmt_summary = summary.copy()
+        fmt_summary["Hedge Fraction h"]   = (fmt_summary["Hedge Fraction h"]*100.0).map(lambda x: f"{x:.1f}%")
+        fmt_summary["Avg PV Revenue (DOM)"] = fmt_summary["Avg PV Revenue (DOM)"].map(lambda x: f"{x:,.2f}")
+        fmt_summary["Avg PV Cost (DOM)"]    = fmt_summary["Avg PV Cost (DOM)"].map(lambda x: f"{x:,.2f}")
+        fmt_summary["Avg PV Profit (DOM)"]  = fmt_summary["Avg PV Profit (DOM)"].map(lambda x: f"{x:,.2f}")
+        fmt_summary["StdDev PV Profit"]     = fmt_summary["StdDev PV Profit"].map(lambda x: f"{x:,.2f}")
+        fmt_summary["Frac(PV Profit < 0)"]  = (fmt_summary["Frac(PV Profit < 0)"]*100.0).map(lambda x: f"{x:.1f}%")
+
+        st.dataframe(fmt_summary, use_container_width=True)
 
         # Histograms
         st.markdown("#### PV Profit Distribution")
