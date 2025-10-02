@@ -235,8 +235,8 @@ st.subheader("Cash Flows")
 st.caption(f"Costs in domestic curreny, Revenues in foreign currency. Provide amounts for years **1–{T}** (row index shows the year).")
 
 cash_df = pd.DataFrame({
-    "Cost (DOM)": [0.0]*T,
-    "Revenue (FOR)": [0.0]*T,
+    "Cost (domestic currency)": [0.0]*T,
+    "Revenue (Foreign curency)": [0.0]*T,
 })
 cash_df.index = pd.Index(range(1, T+1), name=f"Year (1–{T})")  # visual index only
 
@@ -256,12 +256,12 @@ tabs = st.tabs(["Compare Constant-Fraction Strategies"])
 with tabs[0]:
     st.markdown("### Constant Hedge Fraction (h) — Strategy Comparison (DC/FC)")
     st.caption(
-        "- **Spot path**: lognormal with drift tied to inflation differential πΔ = (DOM − FOR).  \n"
-        "  Uses μ = ln(1+πΔ) − 0.5σ² so that E[S_t/S_{t-1}] = 1+πΔ (positive πΔ ⇒ DOM depreciation).  \n"
+        "- **Spot path**: lognormal with drift tied to inflation differential πΔ = (Domestic − Foreign).  \n"
+        "  Uses μ = ln(1+πΔ) − 0.5σ² so that E[S_t/S_{t-1}] = 1+πΔ (positive πΔ ⇒ Domestic depreciation).  \n"
         "- **Unhedged (h=0)**: 100% converts at spot S_t (DC/FC).  \n"
         "- **Hedge-all-at-0**: for each year t, hedge `h × revenue_t` at t=0 using "
         "F₀→t = S₀ × ((1+r_f)^t / (1+r_d)^t); the remaining (1−h) converts at spot S_t.  \n"
-        "- **Roll 1-Year**: each year t−1, hedge `h × revenue_t` for year t using "
+        "- **Rolling 1-Year Hedge**: each year t−1, hedge `h × revenue_t` for year t using "
         "F_{t-1→t} = S_{t-1} × (1+r_f)/(1+r_d); the remaining (1−h) converts at spot S_t."
     )
 
