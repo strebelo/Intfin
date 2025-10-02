@@ -362,7 +362,7 @@ with tabs[0]:
         hs = np.linspace(0.0, 1.0, 11)  # 0, 0.1, ..., 1.0
         strategies = [
             ("Hedge-all-at-0", "all_at_t0"),
-            ("Roll 1-Year",    "roll_one_year"),
+            ("Rolling 1-Year Hedge",    "roll_one_year"),
         ]
 
         for label, strat in strategies:
