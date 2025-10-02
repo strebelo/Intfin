@@ -334,11 +334,11 @@ with tabs[0]:
         st.dataframe(fmt, use_container_width=True)
 
         # Histograms
-        st.markdown("#### PV Profit Distribution (DOM)")
+        st.markdown("#### PV Profit Distribution (in domestic currency)")
         for title, arr in [
             ("Unhedged (h=0): PV Profit (DOM)", res_U["pv_profit_per_sim"]),
             ("Hedge-all-at-0: PV Profit (DOM)", res_A["pv_profit_per_sim"]),
-            ("Roll 1-Year: PV Profit (DOM)",    res_B["pv_profit_per_sim"]),
+            ("Rolling 1-Year Hedge: PV Profit (DOM)",    res_B["pv_profit_per_sim"]),
         ]:
             finite = arr[np.isfinite(arr)]
             if finite.size == 0:
