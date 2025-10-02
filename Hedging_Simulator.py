@@ -387,7 +387,7 @@ with tabs[0]:
                 plt.annotate(f"{int(r['h']*100)}%", (r["std"], r["mean"]), textcoords="offset points", xytext=(5,3))
             plt.xlabel("σ(PV Profit)")
             plt.ylabel("Mean PV Profit")
-            plt.title(f"{label}: Frontier (σ, mean) over h = 0…100% (T = {T})")
+            plt.title(f"{label}: Frontier (σ, mean) over h = 0…100%)")
             st.pyplot(fig)
 
 # End of file
