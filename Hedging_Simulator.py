@@ -193,17 +193,17 @@ st.sidebar.header("Inputs")
 
 # Core market & model inputs
 S0 = st.sidebar.number_input("Current spot S₀ (Domestic currency/Foreign currency)", min_value=1e-9, value=1.05, step=0.01, format="%.6f")
-T = int(st.sidebar.number_input("Time horizon T (years)", min_value=1, max_value=50, value=10, step=1))
+T = int(st.sidebar.number_input("Time horizon T (years)", min_value=1, max_value=50, value=3, step=1))
 sigma_input = st.sidebar.number_input("Annual volatility σ (% per year)", min_value=0.0, value=10.0, step=0.5)
 sigma = sigma_input / 100.0
 
 # NEW: Inflation differential input
-infl_diff_pct = st.sidebar.number_input("Inflation differential (DOM − FOR, % per year)", value=2.0, step=0.25, format="%.4f")
+infl_diff_pct = st.sidebar.number_input("Inflation differential (DOM − FOR, % per year)", value=0.0, step=0.25, format="%.4f")
 infl_diff = infl_diff_pct / 100.0
 
 # Rates, hedge, trading frictions
-r_d_pct = st.sidebar.number_input("Domestic interest rate r_d (% per year)", value=5.0, step=0.25, format="%.4f")
-r_f_pct = st.sidebar.number_input("Foreign interest rate r_f  (% per year)", value=3.0, step=0.25, format="%.4f")
+r_d_pct = st.sidebar.number_input("Domestic interest rate r_d (% per year)", value=3.0, step=0.25, format="%.4f")
+r_f_pct = st.sidebar.number_input("Foreign interest rate r_f  (% per year)", value=5.0, step=0.25, format="%.4f")
 spread_bps = st.sidebar.number_input("Forward bid-ask spread (basis points)", min_value=0.0, value=25.0, step=1.0)
 hedge_frac_pct = st.sidebar.number_input("Hedge fraction of revenue h (% of each year)", min_value=0.0, max_value=100.0, value=50.0, step=1.0, format="%.1f")
 
