@@ -316,7 +316,7 @@ with tabs[0]:
 
         # Summary (includes loss fractions)
         summary = pd.DataFrame({
-            "Strategy": ["Unhedged (h=0)", "Hedge-all-at-0", "Roll 1-Year"],
+            "Strategy": ["Unhedged (h=0)", "Hedge-all-at-0", "Rolling 1-Year Hedge"],
             "Hedge Fraction h": [0.0, hedge_frac, hedge_frac],
             "Avg PV Revenue (DOM)": [res_U["avg_pv_revenue"], res_A["avg_pv_revenue"], res_B["avg_pv_revenue"]],
             "Avg PV Cost (DOM)":    [res_U["avg_pv_cost"],    res_A["avg_pv_cost"],    res_B["avg_pv_cost"]],
