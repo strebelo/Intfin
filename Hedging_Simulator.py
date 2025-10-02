@@ -2,7 +2,9 @@
 # Currency Risk Hedging Simulator (Streamlit) — DC/FC Quoting
 # Constant Hedge Fraction with Unhedged Baseline (h = 0)
 # + User-selectable time horizon T
-# + Button to plot std(Π) vs mean(Π) over h ∈ {0,10%,...,100%}
+# + σ vs mean (H-sweep) plot
+# + Inflation differential-driven drift in spot simulation
+# + Unified "Inputs" section (no separate "Simulation Controls")
 # ------------------------------
 
 import numpy as np
@@ -54,20 +56,35 @@ def dc_per_fc_bid_ask_from_mid(mid_dc_fc, spread_bps):
     ask = mid_dc_fc * (1.0 + s / 2.0)
     return bid, ask
 
-def simulate_spot_paths_dc_fc(S0_dc_fc, sigma, n_sims, T, seed=123):
+def simulate_spot_paths_dc_fc_with_infl_drift(S0_dc_fc, sigma, infl_diff, n_sims, T, seed=123):
     """
-    Lognormal spot simulation (zero drift):
-        S_t^{DC/FC} = S_{t-1}^{DC/FC} * exp(sigma * epsilon_t),  epsilon_t ~ N(0,1)
+    Lognormal spot simulation with drift linked to the inflation differential (DOM − FOR):
+        Let πΔ = infl_diff (decimal per year). We simulate
+            S_t = S_{t-1} * exp( μ_adj + σ * ε_t ),  ε_t ~ N(0,1),
+        where μ_adj = ln(1 + πΔ) - 0.5*σ^2 ensures E[S_t/S_{t-1}] = 1 + πΔ.
+
+        Interpretation with DC/FC quoting:
+        - If πΔ > 0 (DOM inflation > FOR inflation), then E[S_t] grows ⇒ DC depreciates
+          on average versus FOR at rate πΔ, matching PPP intuition.
     Returns array (n_sims, T+1)
     """
-    rng = np.random.default_rng(seed)
-    paths = np.empty((n_sims, T+1), dtype=float)
-    paths[:, 0] = S0_dc_fc
     if sigma < 0:
         raise ValueError("Volatility must be non-negative.")
+    if (1.0 + infl_diff) <= 0.0:
+        raise ValueError("Inflation differential too negative (1 + πΔ must be > 0).")
+
+    rng = np.random.default_rng(seed)
+    paths = np.empty((n_sims, T+1), dtype=float)
+    paths[:, 0] = float(S0_dc_fc)
+
+    # Mean-matching drift so that average depreciation equals the inflation differential
+    mu_adj = np.log1p(infl_diff) - 0.5 * (sigma ** 2)
+
     for t in range(1, T+1):
         eps = rng.standard_normal(n_sims)
-        paths[:, t] = paths[:, t-1] * np.exp(sigma * eps)
+        growth = np.exp(mu_adj + sigma * eps)
+        paths[:, t] = np.maximum(1e-12, paths[:, t-1] * growth)
+
     return paths
 
 def compute_strategy_results_constant_hedge(
@@ -171,33 +188,40 @@ def compute_strategy_results_constant_hedge(
 st.set_page_config(page_title="Currency Risk Hedging Simulator", layout="wide")
 st.title("💱 Currency Risk Hedging Simulator")
 
-# Sidebar controls
-st.sidebar.header("Simulation Controls")
-S0 = st.sidebar.number_input("Current spot S₀ (DC per 1 FC)", min_value=1e-9, value=1.05, step=0.01, format="%.6f")
-sigma_input = st.sidebar.number_input("Annual volatility σ (percent, log spot)", min_value=0.0, value=10.0, step=0.5)
-sigma = sigma_input / 100.0
-spread_bps = st.sidebar.number_input("Forward bid-ask spread (basis points)", min_value=0.0, value=25.0, step=1.0)
-n_sims = int(st.sidebar.number_input("Number of simulations", min_value=1, value=5000, step=100))
-seed = int(st.sidebar.number_input("Random seed", min_value=0, value=42, step=1))
-
-# New: user-selectable time horizon T
-st.sidebar.markdown("---")
-T = int(st.sidebar.number_input("Time horizon T (years)", min_value=1, max_value=50, value=10, step=1))
-
-st.sidebar.markdown("---")
+# Unified Inputs (sidebar)
 st.sidebar.header("Inputs")
+
+# Core market & model inputs
+S0 = st.sidebar.number_input("Current spot S₀ (Domestic currency/Foreign currency)", min_value=1e-9, value=1.05, step=0.01, format="%.6f")
+T = int(st.sidebar.number_input("Time horizon T (years)", min_value=1, max_value=50, value=10, step=1))
+sigma_input = st.sidebar.number_input("Annual volatility σ (% per year)", min_value=0.0, value=10.0, step=0.5)
+sigma = sigma_input / 100.0
+
+# NEW: Inflation differential input
+infl_diff_pct = st.sidebar.number_input("Inflation differential (DOM − FOR, % per year)", value=2.0, step=0.25, format="%.4f")
+infl_diff = infl_diff_pct / 100.0
+
+# Rates, hedge, trading frictions
 r_d_pct = st.sidebar.number_input("Domestic interest rate r_d (% per year)", value=5.0, step=0.25, format="%.4f")
 r_f_pct = st.sidebar.number_input("Foreign interest rate r_f  (% per year)", value=3.0, step=0.25, format="%.4f")
+spread_bps = st.sidebar.number_input("Forward bid-ask spread (basis points)", min_value=0.0, value=25.0, step=1.0)
 hedge_frac_pct = st.sidebar.number_input("Hedge fraction of revenue h (% of each year)", min_value=0.0, max_value=100.0, value=50.0, step=1.0, format="%.1f")
+
+# Simulation controls
+n_sims = int(st.sidebar.number_input("Number of simulations", min_value=1, value=5000, step=100))
+seed = int(st.sidebar.number_input("Random seed", min_value=0, value=42, step=1))
 
 # Convert to decimals
 r_d = r_d_pct / 100.0
 r_f = r_f_pct / 100.0
 hedge_frac = hedge_frac_pct / 100.0
 
-# Validate rates
+# Validate rates & inflation differential
 if (1.0 + r_d) <= 0.0 or (1.0 + r_f) <= 0.0:
     st.error("Rates must be greater than -100%. Please adjust r_d and r_f.")
+    st.stop()
+if (1.0 + infl_diff) <= 0.0:
+    st.error("Inflation differential too negative. Please ensure 1 + (DOM − FOR) > 0.")
     st.stop()
 
 # Discount factors (t=0..T)
@@ -232,6 +256,8 @@ tabs = st.tabs(["Compare Constant-Fraction Strategies"])
 with tabs[0]:
     st.markdown("### Constant Hedge Fraction (h) — Strategy Comparison (DC/FC)")
     st.caption(
+        "- **Spot path**: lognormal with drift tied to inflation differential πΔ = (DOM − FOR).  \n"
+        "  Uses μ = ln(1+πΔ) − 0.5σ² so that E[S_t/S_{t-1}] = 1+πΔ (positive πΔ ⇒ DOM depreciation).  \n"
         "- **Unhedged (h=0)**: 100% converts at spot S_t (DC/FC).  \n"
         "- **Hedge-all-at-0**: for each year t, hedge `h × revenue_t` at t=0 using "
         "F₀→t = S₀ × ((1+r_f)^t / (1+r_d)^t); the remaining (1−h) converts at spot S_t.  \n"
@@ -246,7 +272,14 @@ with tabs[0]:
         hsweep_btn = st.button("Plot σ vs Mean (H-sweep)")
 
     if simulate_btn:
-        S_paths = simulate_spot_paths_dc_fc(S0_dc_fc=S0, sigma=sigma, n_sims=n_sims, T=T, seed=seed)
+        S_paths = simulate_spot_paths_dc_fc_with_infl_drift(
+            S0_dc_fc=S0,
+            sigma=sigma,
+            infl_diff=infl_diff,
+            n_sims=n_sims,
+            T=T,
+            seed=seed
+        )
 
         # Strategy A: Hedge-all-at-0
         res_A = compute_strategy_results_constant_hedge(
@@ -301,7 +334,7 @@ with tabs[0]:
         st.dataframe(fmt, use_container_width=True)
 
         # Histograms
-        st.markdown("#### PV Profit Distribution (DC)")
+        st.markdown("#### PV Profit Distribution (DOM)")
         for title, arr in [
             ("Unhedged (h=0): PV Profit (DOM)", res_U["pv_profit_per_sim"]),
             ("Hedge-all-at-0: PV Profit (DOM)", res_A["pv_profit_per_sim"]),
@@ -318,7 +351,14 @@ with tabs[0]:
 
     # --- σ vs Mean plot over h-grid (respects T) ---
     if hsweep_btn:
-        S_paths = simulate_spot_paths_dc_fc(S0_dc_fc=S0, sigma=sigma, n_sims=n_sims, T=T, seed=seed)
+        S_paths = simulate_spot_paths_dc_fc_with_infl_drift(
+            S0_dc_fc=S0,
+            sigma=sigma,
+            infl_diff=infl_diff,
+            n_sims=n_sims,
+            T=T,
+            seed=seed
+        )
         hs = np.linspace(0.0, 1.0, 11)  # 0, 0.1, ..., 1.0
         strategies = [
             ("Hedge-all-at-0", "all_at_t0"),
