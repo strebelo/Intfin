@@ -2,7 +2,6 @@
 # Currency Risk Hedging Simulator (Streamlit) — DC/FC Quoting
 # Constant Hedge Fraction with Unhedged Baseline (h = 0)
 # + User-selectable time horizon T
-# + No Year column in the cash-flow table
 # + Button to plot std(Π) vs mean(Π) over h ∈ {0,10%,...,100%}
 # ------------------------------
 
@@ -170,12 +169,7 @@ def compute_strategy_results_constant_hedge(
 # ------------------------------
 
 st.set_page_config(page_title="Currency Risk Hedging Simulator", layout="wide")
-st.title("💱 Currency Risk Hedging Simulator (DC/FC)")
-
-st.write(
-    "All FX rates are **DOMESTIC per 1 FOREIGN (DC/FC)**. "
-    "**To convert foreign amount (FC) to domestic (DC), multiply:** DC = FC × (DC/FC)."
-)
+st.title("💱 Currency Risk Hedging Simulator")
 
 # Sidebar controls
 st.sidebar.header("Simulation Controls")
