@@ -33,14 +33,18 @@ def make_discount_factors_constant(r: float, T: int):
 def forward_dc_per_fc_constant_rate(S_t_dc_fc, r_d, r_f, t, m):
     """
     Synthetic forward (DC/FC) from t to m using covered interest parity with CONSTANT rates:
-        F_{t->m}^{DC/FC} = S_t^{DC/FC} * ((1 + r_f)^(m - t) / (1 + r_d)^(m - t))
-    Requires m > t. Accepts scalar or vector S_t^{DC/FC}.
+        *** DC/FC quoting ***
+        F_{t->m}^{DC/FC} = S_t^{DC/FC} * ((1 + r_d)^(m - t) / (1 + r_f)^(m - t))
+
+    Notes:
+      - If r_f > r_d, then F < S (foreign currency at a forward discount in DC/FC terms).
+      - Requires m > t. Accepts scalar or vector S_t^{DC/FC}.
     """
     if m <= t:
         raise ValueError("Forward maturity m must be greater than t.")
     horiz = m - t
-    num = (1.0 + float(r_f)) ** horiz
-    den = (1.0 + float(r_d)) ** horiz
+    num = (1.0 + float(r_d)) ** horiz   # domestic on top
+    den = (1.0 + float(r_f)) ** horiz   # foreign on bottom
     if den <= 0:
         den = 1e-12
     return S_t_dc_fc * (num / den)
@@ -114,7 +118,7 @@ def compute_strategy_results_constant_hedge(
     if strategy == "all_at_t0":
         # At t=0, lock the hedged portion of each year's revenue at F_{0->t}^{DC/FC} (same for all sims)
         for t in range(1, T+1):
-            F_dc_fc_0t = forward_dc_per_fc_constant_rate(S0_dc_fc, r_d, r_f, 0, t)
+            F_dc_fc_0t = forward_dc_per_fc_constant_rate(S0_dc_fc, r_d, r_f, 0, t)  # uses (1+r_d)/(1+r_f)
             bid_dc_fc, _ = dc_per_fc_bid_ask_from_mid(F_dc_fc_0t, spread_bps)
 
             hedged_fc   = h * revenue_fc[t-1]
@@ -127,8 +131,9 @@ def compute_strategy_results_constant_hedge(
             dc_revenue_t[:, t-1] = dc_from_forward + dc_from_unhedged
 
     elif strategy == "roll_one_year":
-        # Each year t−1, hedge year t using 1y forward: F_{t-1->t}^{DC/FC} = S_{t-1} * (1+r_f)/(1+r_d)
-        ratio = (1.0 + float(r_f)) / max(1e-12, (1.0 + float(r_d)))
+        # Each year t−1, hedge year t using 1y forward:
+        #   F_{t-1->t}^{DC/FC} = S_{t-1} * (1+r_d)/(1+r_f)  (DC/FC quoting)
+        ratio = (1.0 + float(r_d)) / max(1e-12, (1.0 + float(r_f)))
         for t in range(1, T+1):
             hedged_fc   = h * revenue_fc[t-1]
             unhedged_fc = (1.0 - h) * revenue_fc[t-1]
@@ -197,7 +202,7 @@ T = int(st.sidebar.number_input("Time horizon T (years)", min_value=1, max_value
 sigma_input = st.sidebar.number_input("Annual volatility σ (% per year)", min_value=0.0, value=10.0, step=0.5)
 sigma = sigma_input / 100.0
 
-# NEW: Inflation differential input
+# Inflation differential input (DOM − FOR)
 infl_diff_pct = st.sidebar.number_input("Inflation differential (Domestic − Foreign, % per year)", value=0.0, step=0.25, format="%.4f")
 infl_diff = infl_diff_pct / 100.0
 
@@ -229,10 +234,25 @@ DF_d_0 = make_discount_factors_constant(r_d, T=T)
 DF_f_0 = make_discount_factors_constant(r_f, T=T)  # kept for completeness/extensibility
 
 # ------------------------------
+# Diagnostics (quick sanity check on CIP with DC/FC quoting)
+# ------------------------------
+with st.expander("Diagnostics: Forward Points (DC/FC)"):
+    try:
+        F_01_mid = forward_dc_per_fc_constant_rate(S0, r_d, r_f, 0, 1)
+        pts = F_01_mid - S0
+        st.write(
+            f"**S₀ (DC/FC):** {S0:.6f}  |  **F₀→1 (mid, DC/FC):** {F_01_mid:.6f}  "
+            f"|  **Forward points (F−S):** {pts:.6f}  "
+            f"|  Expect **F<S** when r_f>r_d."
+        )
+    except Exception as e:
+        st.write(f"Diagnostics error: {e}")
+
+# ------------------------------
 # Cash flows (years 1..T) — NO 'Year' column
 # ------------------------------
 st.subheader("Cash Flows")
-st.caption(f"Costs in domestic curreny, Revenues in foreign currency. Provide amounts for years **1–{T}** (row index shows the year).")
+st.caption(f"Costs in domestic currency, Revenues in foreign currency. Provide amounts for years **1–{T}** (row index shows the year).")
 
 cash_df = pd.DataFrame({
     "Cost (DOM)": [0.0]*T,
@@ -259,10 +279,10 @@ with tabs[0]:
         "- **Spot path**: lognormal with drift tied to inflation differential πΔ = (Domestic − Foreign).  \n"
         "  Uses μ = ln(1+πΔ) − 0.5σ² so that E[S_t/S_{t-1}] = 1+πΔ (positive πΔ ⇒ Domestic depreciation).  \n"
         "- **Unhedged (h=0)**: 100% converts at spot S_t (DC/FC).  \n"
-        "- **Hedge-all-at-0**: for each year t, hedge `h × revenue_t` at t=0 using "
-        "F₀→t = S₀ × ((1+r_f)^t / (1+r_d)^t); the remaining (1−h) converts at spot S_t.  \n"
-        "- **Rolling 1-Year Hedge**: each year t−1, hedge `h × revenue_t` for year t using "
-        "F_{t-1→t} = S_{t-1} × (1+r_f)/(1+r_d); the remaining (1−h) converts at spot S_t."
+        "- **Hedge-all-at-0**: for each year t, hedge `h × revenue_t` at t=0 using  \n"
+        "  F₀→t = S₀ × ((1+r_d)^t / (1+r_f)^t); the remaining (1−h) converts at spot S_t.  \n"
+        "- **Rolling 1-Year Hedge**: each year t−1, hedge `h × revenue_t` for year t using  \n"
+        "  F_{t-1→t} = S_{t-1} × (1+r_d)/(1+r_f); the remaining (1−h) converts at spot S_t."
     )
 
     colA, colB = st.columns([1,1])
