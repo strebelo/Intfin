@@ -198,7 +198,7 @@ sigma_input = st.sidebar.number_input("Annual volatility σ (% per year)", min_v
 sigma = sigma_input / 100.0
 
 # NEW: Inflation differential input
-infl_diff_pct = st.sidebar.number_input("Inflation differential (DOM − FOR, % per year)", value=0.0, step=0.25, format="%.4f")
+infl_diff_pct = st.sidebar.number_input("Inflation differential (Domestic − Foreign, % per year)", value=0.0, step=0.25, format="%.4f")
 infl_diff = infl_diff_pct / 100.0
 
 # Rates, hedge, trading frictions
@@ -221,7 +221,7 @@ if (1.0 + r_d) <= 0.0 or (1.0 + r_f) <= 0.0:
     st.error("Rates must be greater than -100%. Please adjust r_d and r_f.")
     st.stop()
 if (1.0 + infl_diff) <= 0.0:
-    st.error("Inflation differential too negative. Please ensure 1 + (DOM − FOR) > 0.")
+    st.error("Inflation differential too negative. Please ensure 1 + (Domestic − Foreign) > 0.")
     st.stop()
 
 # Discount factors (t=0..T)
@@ -232,7 +232,7 @@ DF_f_0 = make_discount_factors_constant(r_f, T=T)  # kept for completeness/exten
 # Cash flows (years 1..T) — NO 'Year' column
 # ------------------------------
 st.subheader("Cash Flows")
-st.caption(f"Costs in DOM, Revenues in FOR. Provide amounts for years **1–{T}** (row index shows the year).")
+st.caption(f"Costs in domestic curreny, Revenues in foreign currency. Provide amounts for years **1–{T}** (row index shows the year).")
 
 cash_df = pd.DataFrame({
     "Cost (DOM)": [0.0]*T,
