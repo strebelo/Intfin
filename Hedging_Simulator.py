@@ -235,8 +235,8 @@ st.subheader("Cash Flows")
 st.caption(f"Costs in domestic curreny, Revenues in foreign currency. Provide amounts for years **1–{T}** (row index shows the year).")
 
 cash_df = pd.DataFrame({
-    "Cost (domestic currency)": [0.0]*T,
-    "Revenue (Foreign curency)": [0.0]*T,
+    "Cost (DOM)": [0.0]*T,
+    "Revenue (FOR)": [0.0]*T,
 })
 cash_df.index = pd.Index(range(1, T+1), name=f"Year (1–{T})")  # visual index only
 
