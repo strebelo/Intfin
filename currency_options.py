@@ -48,7 +48,7 @@ def forward_rate(S0, T, r_d, r_f):
 # Streamlit UI
 # ------------------------------
 st.set_page_config(page_title="FX Options", layout="wide")
-st.title("Currency Options Pricing (Black–Scholes / Garman–Kohlhagen)")
+st.title("Currency Options Pricing (Black–Scholes)")
 
 with st.sidebar:
     st.header("Inputs")
