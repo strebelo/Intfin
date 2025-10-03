@@ -55,7 +55,7 @@ with st.sidebar:
 
     quote = st.selectbox(
         "Quote convention",
-        options=["Domestic currency/Foreign currency (DC/FC)", "Foreign currency/Domestic currency (FC/DC)"],
+        options=["Dom. currency/For. currency (DC/FC)", "For. currency/Dom. currency (FC/DC)"],
         index=0,
         help="Prices are reported in the domestic currency of the chosen convention."
     )
@@ -134,7 +134,7 @@ ax1.plot(Ks, call_vsK, label="Call")
 ax1.plot(Ks, put_vsK,  label="Put")
 ax1.axvline(K, linestyle="--", linewidth=1)
 ax1.set_xlabel("Strike $K$")
-ax1.set_ylabel("Price (domestic)")
+ax1.set_ylabel("Price (domestic currency)")
 ax1.set_title("Option Prices vs. Strike")
 ax1.legend()
 ax1.grid(True, alpha=0.3)
@@ -157,7 +157,7 @@ ax2.plot(sigmas, call_vsSig, label="Call")
 ax2.plot(sigmas, put_vsSig,  label="Put")
 ax2.axvline(sigma, linestyle="--", linewidth=1)
 ax2.set_xlabel("Volatility $\\sigma$")
-ax2.set_ylabel("Price (domestic)")
+ax2.set_ylabel("Price (domestic currency)")
 ax2.set_title("Option Prices vs. Volatility")
 ax2.legend()
 ax2.grid(True, alpha=0.3)
