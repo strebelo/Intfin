@@ -47,7 +47,7 @@ def forward_rate(S0, T, r_d, r_f):
 # ------------------------------
 # Streamlit UI
 # ------------------------------
-st.set_page_config(page_title="FX Options (Garman–Kohlhagen)", layout="wide")
+st.set_page_config(page_title="FX Options", layout="wide")
 st.title("Currency Options Pricing (Black–Scholes / Garman–Kohlhagen)")
 
 with st.sidebar:
@@ -55,7 +55,7 @@ with st.sidebar:
 
     quote = st.selectbox(
         "Quote convention",
-        options=["Dom. currency/For. currency (DC/FC)", "For. currency/Dom. currency (FC/DC)"],
+        options=["Domestic/Foreign (DC/FC)", "Foreign/Domestic (FC/DC)"],
         index=0,
         help="Prices are reported in the domestic currency of the chosen convention."
     )
@@ -164,4 +164,4 @@ ax2.grid(True, alpha=0.3)
 st.pyplot(fig2, clear_figure=True)
 
 # Footer
-st.caption("Teaching app: European FX options under Garman–Kohlhagen with continuous compounding.")
+st.caption("This app is designed for teaching purposes")
