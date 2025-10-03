@@ -79,10 +79,10 @@ with st.sidebar:
     with c4:
         sigma = st.number_input("Volatility $\\sigma$ (decimal, e.g., 0.20)", min_value=0.0, value=0.10, step=0.01, format="%.4f")
 
-    c6, c7 = st.columns(2)
-    with c6:
+    c5, c6 = st.columns(2)
+    with c5:
         r_d = st.number_input("Domestic rate $r_d$ (cont. comp.)", value=0.03, step=0.005, format="%.4f")
-    with c7:
+    with c6:
         r_f = st.number_input("Foreign rate $r_f$ (cont. comp.)", value=0.01, step=0.005, format="%.4f")
 
 # Compute prices
