@@ -55,7 +55,7 @@ with st.sidebar:
 
     quote = st.selectbox(
         "Quote convention",
-        options=["Domestic/Foreign (DC/FC)", "Foreign/Domestic (FC/DC)"],
+        options=["Domestic/Foreign", "Foreign/Domestic"],
         index=0,
         help="Prices are reported in the domestic currency of the chosen convention."
     )
