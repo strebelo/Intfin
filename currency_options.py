@@ -77,7 +77,7 @@ with st.sidebar:
     with c3:
         T = st.number_input("Maturity $T$ (years)", min_value=0.0, value=1.00, step=0.25)
     with c4:
-        sigma = st.number_input("Volatility $\\sigma$ (decimal, e.g., 0.20)", min_value=0.0, value=0.10, step=0.01, format="%.4f")
+        sigma = st.number_input("Volatility $\\sigma$ (e.g., 0.1)", min_value=0.0, value=0.10, step=0.01, format="%.4f")
 
     c5, c6 = st.columns(2)
     with c5:
