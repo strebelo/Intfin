@@ -14,7 +14,7 @@ import re
 from typing import Optional
 
 # ========================== Instructor switch ===============================
-ENABLE_OUT_OF_SAMPLE = TRUE  # Set False to hide the OOS section
+ENABLE_OUT_OF_SAMPLE = True  # Set False to hide the OOS section
 
 # Optional: sidebar code to toggle (uncomment to use)
 # code = st.sidebar.text_input("Instructor code", type="password", placeholder="••••")
