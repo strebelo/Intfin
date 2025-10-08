@@ -27,21 +27,26 @@ def parse_input_file(uploaded_file) -> pd.DataFrame:
     elif name.endswith(".xlsx") or name.endswith(".xls"):
         df = pd.read_excel(uploaded_file)
     else:
+        # Fallback: try CSV
         df = pd.read_csv(uploaded_file)
     return df
 
 def coerce_datetime(series: pd.Series):
+    # robust datetime coercion
     return pd.to_datetime(series, errors="coerce", infer_datetime_format=True)
 
 def normalize_colname(s: str) -> str:
     return "".join(ch for ch in s.lower().strip() if ch.isalnum())
 
 def guess_columns(df: pd.DataFrame):
+    # Heuristic guessing for date & price columns (handles e.g., "Spot rate")
     norm_map = {col: normalize_colname(col) for col in df.columns}
     inv_map = {v: k for k, v in norm_map.items()}
 
     date_candidates = ["date", "month", "period", "observationdate"]
-    price_candidates = ["spotrate", "spot", "rate", "price", "exchangerate", "fx", "spotusd", "usdusd"]
+    price_candidates = [
+        "spotrate", "spot", "rate", "price", "exchangerate", "fx", "spotusd", "usdusd"
+    ]
 
     date_col = None
     for cand in date_candidates:
@@ -49,6 +54,7 @@ def guess_columns(df: pd.DataFrame):
             date_col = inv_map[cand]
             break
     if date_col is None:
+        # fallback: first column that parses mostly to dates
         for col in df.columns:
             dt = pd.to_datetime(df[col], errors="coerce", infer_datetime_format=True)
             if dt.notna().mean() > 0.8:
@@ -61,6 +67,7 @@ def guess_columns(df: pd.DataFrame):
             price_col = inv_map[cand]
             break
     if price_col is None:
+        # fallback: first mostly-numeric column != date
         for col in df.columns:
             if col != date_col and pd.to_numeric(df[col], errors="coerce").notna().mean() > 0.9:
                 price_col = col
@@ -84,18 +91,20 @@ def compute_annual_log_changes(df: pd.DataFrame, date_col: str, price_col: str) 
 
 def fit_kde_cv_gaussian(x: np.ndarray, cv_folds: int = 5):
     """
-    Fit 1D Gaussian KDE via scikit-learn with CV-chosen bandwidth.
-    Standardize x -> z, tune bandwidth on z, then use change of variables.
-    Returns (best_kde, mu, sigma, best_bandwidth_z)
+    Fit a 1D Gaussian KDE via scikit-learn with CV-chosen bandwidth.
+    We standardize x -> z, tune bandwidth on z, then map back via change of variables.
+    Returns (kde_estimator, mu, sigma, best_bandwidth_z)
     """
     mu = float(np.mean(x))
     sigma = float(np.std(x, ddof=1))
     if sigma <= 0:
         raise ValueError("Standard deviation is zero; KDE cannot be fit.")
 
-    z = ((x - mu) / sigma).reshape(-1, 1)
+    z = (x - mu) / sigma
+    z = z.reshape(-1, 1)
 
-    bandwidths = np.linspace(0.1, 1.5, 25)  # broad, sensible range on z-scale
+    # Reasonable bandwidth grid on standardized data
+    bandwidths = np.linspace(0.1, 1.5, 25)
 
     n = len(z)
     k = max(2, min(cv_folds, max(2, n // 5)))  # at least 2 folds; ~5 obs/fold
@@ -111,24 +120,37 @@ def fit_kde_cv_gaussian(x: np.ndarray, cv_folds: int = 5):
 
     best_kde = grid.best_estimator_
     best_bw = float(grid.best_params_["bandwidth"])
+
     return best_kde, mu, sigma, best_bw
 
 def evaluate_kde_pdf_on_grid(best_kde: KernelDensity, grid_x: np.ndarray, mu: float, sigma: float) -> np.ndarray:
-    """f_X(x) = f_Z((x-mu)/sigma)/sigma"""
+    """
+    Evaluate the fitted KDE (trained on standardized z) on an x-grid.
+    Change of variables: f_X(x) = f_Z(z)/sigma with z=(x-mu)/sigma.
+    """
     zgrid = ((grid_x - mu) / sigma).reshape(-1, 1)
     logpdf_z = best_kde.score_samples(zgrid)
-    return np.exp(logpdf_z) / sigma
+    pdf_x = np.exp(logpdf_z) / sigma
+    return pdf_x
 
 def normal_pdf(x, mu, sigma):
     return stats.norm.pdf(x, loc=mu, scale=sigma)
 
+# --- FIXED TAIL INTEGRATION (Option A): integrate left & right tails separately ---
 def tail_prob_from_pdf(grid_x: np.ndarray, pdf_x: np.ndarray, mu: float, sigma: float, k: float = 1.96) -> float:
-    mask = (np.abs(grid_x - mu) > k * sigma)
-    if not np.any(mask):
-        return 0.0
-    return float(np.trapz(pdf_x[mask], grid_x[mask]))
+    left = mu - k * sigma
+    right = mu + k * sigma
+
+    left_mask = grid_x < left
+    right_mask = grid_x > right
+
+    area_left = float(np.trapz(pdf_x[left_mask], grid_x[left_mask])) if np.any(left_mask) else 0.0
+    area_right = float(np.trapz(pdf_x[right_mask], grid_x[right_mask])) if np.any(right_mask) else 0.0
+
+    return area_left + area_right
 
 def tail_prob_normal(k: float = 1.96) -> float:
+    # P(|Z| > k) for standard normal
     return float(2 * (1 - stats.norm.cdf(k)))
 
 # -------------------------------
@@ -244,7 +266,8 @@ pad_stds = 1.0
 xmin, xmax = np.min(x), np.max(x)
 lo = min(mu - 4 * sigma, xmin) - pad_stds * sigma
 hi = max(mu + 4 * sigma, xmax) + pad_stds * sigma
-grid = np.linspace(lo, hi, 2000)
+# Slightly wider & finer grid to ensure stable integration
+grid = np.linspace(lo - 0.5 * sigma, hi + 0.5 * sigma, 4000)
 
 # Evaluate overlays
 pdf_norm = normal_pdf(grid, mu, sigma) if show_normal else None
@@ -298,7 +321,6 @@ tt3.metric("Empirical proportion", f"{p_tail_emp:.4f}")
 
 st.caption("Under a Normal distribution, P(|Z|>1.96) ≈ 0.0500. Differences vs. CV Gaussian KDE highlight fat/thin tails.")
 
-
 # -------------------------------
 # Diagnostics (temporary; safe to delete/comment out)
 # -------------------------------
@@ -307,14 +329,14 @@ with st.expander("Diagnostics (temporary; safe to delete)"):
     total_area = float(np.trapz(pdf_kde_full, grid))
     st.write(f"DEBUG — KDE total area over grid: **{total_area:.4f}**")
 
-    # 2) Grid coverage
+    # 2) Grid coverage and 95% bounds
     st.write(f"DEBUG — grid range: **[{grid.min():.6f}, {grid.max():.6f}]**")
-    st.write(f"DEBUG — μ = {mu:.6f}, σ = {sigma:.6f},  left/right 95% bounds: "
+    st.write(f"DEBUG — μ = {mu:.6f}, σ = {sigma:.6f},  95% bounds: "
              f"[{(mu - 1.96*sigma):.6f}, {(mu + 1.96*sigma):.6f}]")
 
     # 3) Tail probabilities recap
     st.write(f"DEBUG — Tail (Normal): **{p_tail_norm:.4f}**")
-    st.write(f"DEBUG — Tail (KDE, trapezoid on grid): **{p_tail_kde:.4f}**")
+    st.write(f"DEBUG — Tail (KDE, trapezoid on grid — fixed): **{p_tail_kde:.4f}**")
     st.write(f"DEBUG — Tail (Empirical proportion): **{p_tail_emp:.4f}**")
 
     # 4) Monte Carlo tail from KDE (sample on z, map back to x)
@@ -326,7 +348,7 @@ with st.expander("Diagnostics (temporary; safe to delete)"):
     except Exception as e:
         st.write(f"DEBUG — KDE Monte Carlo sampling failed: {e}")
 
-    # 5) Optional: bandwidth sensitivity on z-scale (Scott/Silverman-like magnitudes)
+    # 5) Optional: bandwidth sensitivity on z-scale
     if st.checkbox("Run bandwidth sensitivity check (z-scale)", value=False):
         bws = [0.20, 0.30, 0.40, 0.60, 0.80, 1.00, 1.20]
         rows = []
