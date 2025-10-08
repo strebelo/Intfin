@@ -1,6 +1,5 @@
 # fx_volatility.py
 # Streamlit app: Annual Log FX Changes — Normal vs. Fat Tails
-# Author: (your name here)
 
 import io
 import numpy as np
@@ -22,7 +21,6 @@ def parse_input_file(uploaded_file) -> pd.DataFrame:
     elif name.endswith(".xlsx") or name.endswith(".xls"):
         df = pd.read_excel(uploaded_file)
     else:
-        # Try CSV as fallback
         df = pd.read_csv(uploaded_file)
     return df
 
@@ -33,21 +31,21 @@ def normalize_colname(s: str) -> str:
     return "".join(ch for ch in s.lower().strip() if ch.isalnum())
 
 def guess_columns(df: pd.DataFrame):
-    # Try to guess date and price columns (handles e.g. "Spot rate")
     norm_map = {col: normalize_colname(col) for col in df.columns}
     inv_map = {v: k for k, v in norm_map.items()}
-    # Candidates
+
     date_candidates = ["date", "month", "period", "observationdate"]
     price_candidates = [
-        "spotrate", "spot", "rate", "pricereturn", "price", "exchangerate", "fx", "spotusd", "usdusd"
+        "spotrate", "spot", "rate", "pricereturn", "price",
+        "exchangerate", "fx", "spotusd", "usdusd"
     ]
+
     date_col = None
     for cand in date_candidates:
         if cand in inv_map:
             date_col = inv_map[cand]
             break
     if date_col is None:
-        # fallback: first column that parses to many datetimes
         for col in df.columns:
             dt = pd.to_datetime(df[col], errors="coerce", infer_datetime_format=True)
             if dt.notna().mean() > 0.8:
@@ -60,7 +58,6 @@ def guess_columns(df: pd.DataFrame):
             price_col = inv_map[cand]
             break
     if price_col is None:
-        # fallback: first numeric-looking column not equal to date
         for col in df.columns:
             if col != date_col and pd.to_numeric(df[col], errors="coerce").notna().mean() > 0.9:
                 price_col = col
@@ -87,16 +84,12 @@ def normal_pdf(x, mu, sigma):
     return stats.norm.pdf(x, loc=mu, scale=sigma)
 
 def tail_probs_normal(mu, sigma, k=1.96):
-    # P(|X - mu| > k*sigma) under Normal = 2*(1 - Phi(k))
-    p = 2 * (1 - stats.norm.cdf(k))
-    return p
+    return 2 * (1 - stats.norm.cdf(k))
 
 def tail_probs_kde(kde, mu, sigma, grid):
     mask = (np.abs(grid - mu) > 1.96 * sigma)
     pdf_vals = kde(grid)
-    # Numerical integral using trapezoid
-    mass = np.trapz(pdf_vals[mask], grid[mask])
-    return mass
+    return np.trapz(pdf_vals[mask], grid[mask])
 
 # -------------------------------
 # UI
@@ -107,7 +100,7 @@ st.title("Annual Log FX Changes — Normal vs. Fat Tails")
 st.markdown(
     """
 Upload **monthly** spot exchange rates (CSV or Excel).  
-The app computes **annual log changes**: \\(\\Delta\\ell_t = \\log S_t - \\log S_{t-12}\\), then compares Normal vs. nonparametric (KDE) distributions and tail risks.
+The app computes **annual log changes**: \\(\\Delta\\ell_t = \\log S_t - \\log S_{t-12}\\), then compares a Normal model with a **Kernel Density Estimation (KDE)** model and reports tail risks.
 """
 )
 
@@ -132,9 +125,11 @@ date_guess, price_guess = guess_columns(raw)
 
 col1, col2 = st.columns(2)
 with col1:
-    date_col = st.selectbox("Date column", options=list(raw.columns), index=(list(raw.columns).index(date_guess) if date_guess in raw.columns else 0))
+    date_col = st.selectbox("Date column", options=list(raw.columns),
+                            index=(list(raw.columns).index(date_guess) if date_guess in raw.columns else 0))
 with col2:
-    price_col = st.selectbox("Spot rate column", options=list(raw.columns), index=(list(raw.columns).index(price_guess) if price_guess in raw.columns else 1 if len(raw.columns) > 1 else 0))
+    price_col = st.selectbox("Spot rate column", options=list(raw.columns),
+                             index=(list(raw.columns).index(price_guess) if price_guess in raw.columns else (1 if len(raw.columns) > 1 else 0)))
 
 # Compute changes
 try:
@@ -151,11 +146,12 @@ x = panel["annual_log_change"].dropna().values
 mu = float(np.mean(x))
 sigma = float(np.std(x, ddof=1))
 skew = float(stats.skew(x, bias=False))
-kurt = float(stats.kurtosis(x, fisher=True, bias=False))  # excess kurtosis
+# Pearson (non-excess) kurtosis; Normal = 3
+kurt = float(stats.kurtosis(x, fisher=False, bias=False))
 
 # Normality tests
 jb_stat, jb_p = stats.jarque_bera(x)
-sh_stat, sh_p = stats.shapiro(x) if len(x) <= 5000 else (np.nan, np.nan)  # Shapiro is slow >5k
+sh_stat, sh_p = stats.shapiro(x) if len(x) <= 5000 else (np.nan, np.nan)
 ks_stat, ks_p = stats.kstest((x - mu)/sigma, 'norm')
 
 # KDE fit
@@ -166,7 +162,7 @@ mcol1, mcol2, mcol3, mcol4 = st.columns(4)
 mcol1.metric("Mean (μ)", f"{mu:.4f}")
 mcol2.metric("Std (σ)", f"{sigma:.4f}")
 mcol3.metric("Skewness (Normal = 0)", f"{skew:.4f}")
-mcol4.metric("Excess Kurtosis (Normal = 0)", f"{kurt:.4f}")
+mcol4.metric("Kurtosis (Normal = 3)", f"{kurt:.4f}")
 
 st.subheader("Normality tests")
 t1, t2, t3 = st.columns(3)
@@ -181,31 +177,44 @@ with t3:
     st.write(f"stat = {ks_stat:.3f}, p = {ks_p:.3g}")
 
 # -------------------------------
-# Plots (Histogram + Normal & KDE)
+# Distribution Plot (with toggles)
 # -------------------------------
-st.subheader("Distribution: Histogram with Normal and KDE overlays")
+st.subheader("Distribution: Histogram with optional overlays")
 
-# Grid padding: fixed to 1 (one standard deviation each side), per request
-# No slider.
+# Overlays toggles
+ocol1, ocol2 = st.columns(2)
+with ocol1:
+    show_normal = st.checkbox("Show Normal distribution overlay", value=True)
+with ocol2:
+    show_kde = st.checkbox("Show Kernel Density Estimation (KDE) overlay", value=True)
+
+# Grid padding fixed to 1 standard deviation on each side
 pad_stds = 1.0
-xmin = min(x)
-xmax = max(x)
+xmin, xmax = np.min(x), np.max(x)
 lo = min(mu - 4 * sigma, xmin) - pad_stds * sigma
 hi = max(mu + 4 * sigma, xmax) + pad_stds * sigma
 grid = np.linspace(lo, hi, 2000)
 
-pdf_norm = normal_pdf(grid, mu, sigma)
-pdf_kde = kde(grid)
-
 fig1, ax1 = plt.subplots(figsize=(7, 4.25))
-# histogram density
-ax1.hist(x, bins="auto", density=True, alpha=0.6, edgecolor="black")
-ax1.plot(grid, pdf_norm, linewidth=2, label="Normal PDF")
-ax1.plot(grid, pdf_kde, linewidth=2, linestyle="--", label="KDE PDF")
+ax1.hist(x, bins="auto", density=True, alpha=0.6, edgecolor="black", label="Histogram")
+
+legend_handles = []
+
+if show_normal:
+    pdf_norm = normal_pdf(grid, mu, sigma)
+    (lnorm,) = ax1.plot(grid, pdf_norm, linewidth=2, label="Normal PDF")
+    legend_handles.append(lnorm)
+
+if show_kde:
+    pdf_kde = kde(grid)
+    (lkde,) = ax1.plot(grid, pdf_kde, linewidth=2, linestyle="--", label="Kernel Density Estimation (KDE) PDF")
+    legend_handles.append(lkde)
+
 ax1.set_xlabel("Annual log change")
 ax1.set_ylabel("Density")
-ax1.set_title("Histogram with Normal and KDE PDFs")
-ax1.legend()
+ax1.set_title("Histogram with Optional Normal / KDE Overlays")
+if legend_handles:
+    ax1.legend()
 ax1.grid(True, linestyle=":", linewidth=0.8)
 st.pyplot(fig1)
 
@@ -214,30 +223,21 @@ st.pyplot(fig1)
 # -------------------------------
 st.subheader("Tail probabilities beyond μ ± 1.96σ")
 
-# Normal
 p_tail_normal = tail_probs_normal(mu, sigma, k=1.96)
 
-# KDE numeric integral
+# Ensure grid and kde exist for KDE tail mass even if overlay hidden
+pdf_kde_full = kde(grid)
 p_tail_kde = tail_probs_kde(kde, mu, sigma, grid)
 
-# Empirical
 threshold = 1.96 * sigma
 p_tail_emp = float(np.mean(np.abs(x - mu) > threshold))
 
 tt1, tt2, tt3 = st.columns(3)
 tt1.metric("Normal model", f"{p_tail_normal:.4f}")
-tt2.metric("KDE model", f"{p_tail_kde:.4f}")
+tt2.metric("Kernel Density Estimation model", f"{p_tail_kde:.4f}")
 tt3.metric("Empirical proportion", f"{p_tail_emp:.4f}")
 
 st.caption(
-    "Note: Under a Normal distribution, P(|X−μ|>1.96σ) ≈ 0.0500. "
-    "Differences between KDE and Normal highlight fat/thin tails in the data."
+    "Under a Normal distribution, P(|X−μ|>1.96σ) ≈ 0.0500. "
+    "Differences vs. the Kernel Density Estimation highlight fat/thin tails."
 )
-
-# -------------------------------
-# Data preview
-# -------------------------------
-with st.expander("Show computed series"):
-    st.dataframe(panel[["annual_log_change"]].rename(columns={"annual_log_change": "Annual log change"}), use_container_width=True)
-
-st.success("Done.")
