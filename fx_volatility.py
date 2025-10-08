@@ -1,34 +1,12 @@
-
 # fx_volatility.py
 # Streamlit app: Annual Log FX Changes — Normal vs. Fat Tails
 # Author: (your name here)
-# Usage: `streamlit run streamlit_fx_exchange_app.py`
-#
-# Features
-# - Upload monthly spot exchange rates (CSV or Excel)
-# - Compute annual log changes: log(S_t) - log(S_{t-12})
-# - Summary stats: mean, std, skew, kurtosis
-# - Histogram with Normal and KDE overlays
-# - Normality tests: Jarque–Bera, Shapiro–Wilk, KS
-# - QQ plot vs Normal
-# - Nonparametric PDF (KDE) vs Normal
-# - Tail probabilities beyond μ ± 1.96σ:
-#     * Normal model
-#     * KDE model (numerical integration on a fine grid)
-#     * Empirical proportion
-#
-# Notes
-# - Ensure your file has at least a Date column (monthly) and a SpotRate column.
-# - Dates should parse to a monotone time index; the app sorts by date safely.
-#
-# ---------------------------------------------------------------
 
 import io
 import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
-
 from scipy import stats
 
 st.set_page_config(page_title="FX Annual Log Changes — Normal vs Fat Tails", layout="wide")
@@ -51,6 +29,45 @@ def parse_input_file(uploaded_file) -> pd.DataFrame:
 def coerce_datetime(series: pd.Series):
     return pd.to_datetime(series, errors="coerce", infer_datetime_format=True)
 
+def normalize_colname(s: str) -> str:
+    return "".join(ch for ch in s.lower().strip() if ch.isalnum())
+
+def guess_columns(df: pd.DataFrame):
+    # Try to guess date and price columns (handles e.g. "Spot rate")
+    norm_map = {col: normalize_colname(col) for col in df.columns}
+    inv_map = {v: k for k, v in norm_map.items()}
+    # Candidates
+    date_candidates = ["date", "month", "period", "observationdate"]
+    price_candidates = [
+        "spotrate", "spot", "rate", "pricereturn", "price", "exchangerate", "fx", "spotusd", "usdusd"
+    ]
+    date_col = None
+    for cand in date_candidates:
+        if cand in inv_map:
+            date_col = inv_map[cand]
+            break
+    if date_col is None:
+        # fallback: first column that parses to many datetimes
+        for col in df.columns:
+            dt = pd.to_datetime(df[col], errors="coerce", infer_datetime_format=True)
+            if dt.notna().mean() > 0.8:
+                date_col = col
+                break
+
+    price_col = None
+    for cand in price_candidates:
+        if cand in inv_map:
+            price_col = inv_map[cand]
+            break
+    if price_col is None:
+        # fallback: first numeric-looking column not equal to date
+        for col in df.columns:
+            if col != date_col and pd.to_numeric(df[col], errors="coerce").notna().mean() > 0.9:
+                price_col = col
+                break
+
+    return date_col, price_col
+
 def compute_annual_log_changes(df: pd.DataFrame, date_col: str, price_col: str) -> pd.DataFrame:
     out = df[[date_col, price_col]].copy()
     out[date_col] = coerce_datetime(out[date_col])
@@ -64,218 +81,163 @@ def compute_annual_log_changes(df: pd.DataFrame, date_col: str, price_col: str) 
     return out
 
 def kde_fit(x: np.ndarray, bw_method: str | float = "scott"):
-    # gaussian_kde supports "scott", "silverman", or scalar factor
     return stats.gaussian_kde(x, bw_method=bw_method)
 
-def kde_pdf_on_grid(kde, grid: np.ndarray) -> np.ndarray:
-    return kde(grid)
+def normal_pdf(x, mu, sigma):
+    return stats.norm.pdf(x, loc=mu, scale=sigma)
 
-def kde_tail_probs(kde, grid: np.ndarray, pdf_vals: np.ndarray, lower: float, upper: float) -> tuple[float, float, float]:
-    # Numerical integration via trapezoid rule on a dense grid
-    dx = np.diff(grid)
-    mid_pdf = (pdf_vals[:-1] + pdf_vals[1:]) * 0.5
-    # Build CDF by integrating from left
-    cdf_vals = np.concatenate([[0.0], np.cumsum(mid_pdf * dx)])
-    cdf_vals = np.clip(cdf_vals, 0.0, 1.0)
+def tail_probs_normal(mu, sigma, k=1.96):
+    # P(|X - mu| > k*sigma) under Normal = 2*(1 - Phi(k))
+    p = 2 * (1 - stats.norm.cdf(k))
+    return p
 
-    # Interpolate CDF at arbitrary points
-    def interp_cdf(x):
-        return np.interp(x, grid, cdf_vals, left=0.0, right=1.0)
-
-    p_lower = interp_cdf(lower)  # P(X <= lower)
-    p_upper = 1.0 - interp_cdf(upper)  # P(X >= upper)
-    p_two_tail = p_lower + p_upper
-    return float(p_lower), float(p_upper), float(p_two_tail)
-
-def normal_tail_probs(mu: float, sigma: float, lower: float, upper: float) -> tuple[float, float, float]:
-    dist = stats.norm(loc=mu, scale=sigma)
-    p_lower = dist.cdf(lower)
-    p_upper = 1.0 - dist.cdf(upper)
-    return float(p_lower), float(p_upper), float(p_lower + p_upper)
-
-def empirical_tail_props(x: np.ndarray, lower: float, upper: float) -> tuple[float, float, float]:
-    n = x.size
-    if n == 0:
-        return 0.0, 0.0, 0.0
-    p_lower = float(np.mean(x <= lower))
-    p_upper = float(np.mean(x >= upper))
-    return p_lower, p_upper, p_lower + p_upper
-
-def nice_num(n):
-    return f"{n:,.6f}"
-
-def add_v_line(ax, x, label):
-    ax.axvline(x, linestyle="--", linewidth=1)
-    ax.text(x, ax.get_ylim()[1]*0.95, label, rotation=90, va="top", ha="right", fontsize=9)
+def tail_probs_kde(kde, mu, sigma, grid):
+    mask = (np.abs(grid - mu) > 1.96 * sigma)
+    pdf_vals = kde(grid)
+    # Numerical integral using trapezoid
+    mass = np.trapz(pdf_vals[mask], grid[mask])
+    return mass
 
 # -------------------------------
-# Sidebar — Controls & Template
+# UI
 # -------------------------------
-st.sidebar.header("Upload & Settings")
-
-with st.sidebar.expander("Download template", expanded=False):
-    sample = pd.DataFrame({
-        "Date": pd.date_range("2000-01-01", periods=36, freq="MS"),
-        "SpotRate": np.linspace(1.00, 1.30, 36) * (1.0 + 0.03*np.sin(np.linspace(0, 3*np.pi, 36)))
-    })
-    buf = io.StringIO()
-    sample.to_csv(buf, index=False)
-    st.download_button("Download CSV template", data=buf.getvalue(), file_name="fx_monthly_template.csv", mime="text/csv")
-
-uploaded = st.sidebar.file_uploader("Upload monthly FX data (CSV or Excel)", type=["csv", "xlsx", "xls"])
-
-date_col = st.sidebar.text_input("Date column name", value="Date")
-price_col = st.sidebar.text_input("Spot rate column name", value="SpotRate")
-
-bins = st.sidebar.slider("Histogram bins", min_value=10, max_value=120, value=50, step=5)
-bw_choice = st.sidebar.selectbox("KDE bandwidth method", options=["scott", "silverman", "custom"], index=0)
-bw_custom = None
-if bw_choice == "custom":
-    bw_custom = st.sidebar.number_input("Custom bandwidth factor (e.g., 0.5 to widen tails)", min_value=0.01, max_value=5.0, value=1.0, step=0.05)
-
-grid_padding = st.sidebar.slider("Grid padding (σ units beyond data)", min_value=1.0, max_value=6.0, value=4.0, step=0.5)
-
-st.sidebar.caption("Tip: Use the template to ensure your file schema.")
 
 st.title("Annual Log FX Changes — Normal vs. Fat Tails")
 
+st.markdown(
+    """
+Upload **monthly** spot exchange rates (CSV or Excel).  
+The app computes **annual log changes**: \\(\\Delta\\ell_t = \\log S_t - \\log S_{t-12}\\), then compares Normal vs. nonparametric (KDE) distributions and tail risks.
+"""
+)
+
+uploaded = st.file_uploader("Upload CSV or Excel with a Date column and a Spot Rate column", type=["csv", "xlsx", "xls"])
+
 if uploaded is None:
-    st.info("Upload a CSV/Excel with monthly spot rates to begin. Use the template in the sidebar if needed.")
+    st.info("Awaiting file upload…")
     st.stop()
 
-# -------------------------------
-# Data ingestion & processing
-# -------------------------------
+# Read and guess columns
 try:
     raw = parse_input_file(uploaded)
 except Exception as e:
-    st.error(f"Could not read file: {e}")
+    st.error(f"Could not read the file: {e}")
     st.stop()
 
-if date_col not in raw.columns or price_col not in raw.columns:
-    st.error(f"Columns not found. Available: {list(raw.columns)}")
+if raw.empty:
+    st.error("The uploaded file is empty.")
     st.stop()
 
-with st.expander("Preview data"):
-    st.dataframe(raw.head(20), use_container_width=True)
+date_guess, price_guess = guess_columns(raw)
 
+col1, col2 = st.columns(2)
+with col1:
+    date_col = st.selectbox("Date column", options=list(raw.columns), index=(list(raw.columns).index(date_guess) if date_guess in raw.columns else 0))
+with col2:
+    price_col = st.selectbox("Spot rate column", options=list(raw.columns), index=(list(raw.columns).index(price_guess) if price_guess in raw.columns else 1 if len(raw.columns) > 1 else 0))
+
+# Compute changes
 try:
-    panel = compute_annual_log_changes(raw, date_col=date_col, price_col=price_col)
+    panel = compute_annual_log_changes(raw, date_col, price_col)
 except Exception as e:
-    st.error(f"Failed to compute annual log changes: {e}")
+    st.error(f"Problem computing annual log changes: {e}")
     st.stop()
 
-if panel.empty:
-    st.warning("Not enough data to compute 12-month log changes. Provide at least 13 months of data.")
+if panel["annual_log_change"].empty:
+    st.warning("Not enough data to compute 12-month log changes. Provide at least 13 monthly observations.")
     st.stop()
 
-x = panel["annual_log_change"].to_numpy()
+x = panel["annual_log_change"].dropna().values
 mu = float(np.mean(x))
-sigma = float(np.std(x, ddof=1))  # sample std
-
-# Extra moments
+sigma = float(np.std(x, ddof=1))
 skew = float(stats.skew(x, bias=False))
-kurt = float(stats.kurtosis(x, fisher=False, bias=False))  # Pearson (normal=3)
+kurt = float(stats.kurtosis(x, fisher=True, bias=False))  # excess kurtosis
 
-left_col, right_col = st.columns([1, 1])
+# Normality tests
+jb_stat, jb_p = stats.jarque_bera(x)
+sh_stat, sh_p = stats.shapiro(x) if len(x) <= 5000 else (np.nan, np.nan)  # Shapiro is slow >5k
+ks_stat, ks_p = stats.kstest((x - mu)/sigma, 'norm')
 
-with left_col:
-    st.subheader("Summary statistics")
-    st.markdown(f"""
-- **Observations:** {len(x)}
-- **Mean (μ):** {nice_num(mu)}
-- **Std. dev (σ):** {nice_num(sigma)}
-- **Skewness:** {nice_num(skew)}
-- **Kurtosis (Pearson):** {nice_num(kurt)} (Normal = 3)
-    """)
+# KDE fit
+kde = kde_fit(x, bw_method="scott")
 
-    # Normality tests
-    jb_stat, jb_p = stats.jarque_bera(x)
-    sh_stat, sh_p = stats.shapiro(x) if len(x) <= 5000 else (np.nan, np.nan)  # Shapiro limited to n<=5000
-    # KS against N(mu, sigma)
-    ks_stat, ks_p = stats.kstest((x - mu)/sigma, 'norm')
+st.subheader("Summary statistics")
+mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+mcol1.metric("Mean (μ)", f"{mu:.4f}")
+mcol2.metric("Std (σ)", f"{sigma:.4f}")
+mcol3.metric("Skewness (Normal = 0)", f"{skew:.4f}")
+mcol4.metric("Excess Kurtosis (Normal = 0)", f"{kurt:.4f}")
 
-    st.subheader("Normality tests")
-    st.markdown(f"""
-- **Jarque–Bera:** statistic = {nice_num(jb_stat)}, p-value = {nice_num(jb_p)}
-- **Shapiro–Wilk:** statistic = {nice_num(sh_stat)}, p-value = {nice_num(sh_p)} {'(omitted if n>5000)' if len(x)>5000 else ''}
-- **Kolmogorov–Smirnov (vs Normal):** statistic = {nice_num(ks_stat)}, p-value = {nice_num(ks_p)}
-    """)
-
-with right_col:
-    st.subheader("QQ plot vs Normal")
-    fig = plt.figure(figsize=(6, 5))
-    stats.probplot(x, dist="norm", sparams=(mu, sigma), plot=plt)
-    plt.xlabel("Theoretical Quantiles (Normal)")
-    plt.ylabel("Sample Quantiles")
-    plt.title("QQ Plot: Annual Log Changes vs Normal")
-    st.pyplot(fig, clear_figure=True)
+st.subheader("Normality tests")
+t1, t2, t3 = st.columns(3)
+with t1:
+    st.write("**Jarque–Bera**")
+    st.write(f"stat = {jb_stat:.3f}, p = {jb_p:.3g}")
+with t2:
+    st.write("**Shapiro–Wilk**")
+    st.write("n ≤ 5000 required" if np.isnan(sh_stat) else f"stat = {sh_stat:.3f}, p = {sh_p:.3g}")
+with t3:
+    st.write("**Kolmogorov–Smirnov (vs Normal)**")
+    st.write(f"stat = {ks_stat:.3f}, p = {ks_p:.3g}")
 
 # -------------------------------
-# Histogram + Overlays
+# Plots (Histogram + Normal & KDE)
 # -------------------------------
-st.subheader("Distribution: Histogram, Normal PDF, KDE")
+st.subheader("Distribution: Histogram with Normal and KDE overlays")
 
-# Grid for overlays
-std_span = grid_padding * sigma if sigma > 0 else 1.0
-grid_min = float(np.min(x) - std_span)
-grid_max = float(np.max(x) + std_span)
-grid = np.linspace(grid_min, grid_max, 2000)
+# Grid padding: fixed to 1 (one standard deviation each side), per request
+# No slider.
+pad_stds = 1.0
+xmin = min(x)
+xmax = max(x)
+lo = min(mu - 4 * sigma, xmin) - pad_stds * sigma
+hi = max(mu + 4 * sigma, xmax) + pad_stds * sigma
+grid = np.linspace(lo, hi, 2000)
 
-# Normal pdf
-normal_pdf = stats.norm.pdf(grid, loc=mu, scale=sigma) if sigma > 0 else np.zeros_like(grid)
+pdf_norm = normal_pdf(grid, mu, sigma)
+pdf_kde = kde(grid)
 
-# KDE
-bw = bw_custom if (bw_choice == "custom") else bw_choice
-kde = kde_fit(x, bw_method=bw)
-kde_pdf = kde_pdf_on_grid(kde, grid)
-
-# Plot
-fig = plt.figure(figsize=(8, 5))
-ax = plt.gca()
-ax.hist(x, bins=bins, density=True, alpha=0.35, label="Histogram")
-ax.plot(grid, normal_pdf, label="Normal PDF", linewidth=2)
-ax.plot(grid, kde_pdf, label=f"KDE PDF (bw={bw})", linewidth=2)
-add_v_line(ax, mu, "μ")
-add_v_line(ax, mu - 1.96*sigma, "μ - 1.96σ")
-add_v_line(ax, mu + 1.96*sigma, "μ + 1.96σ")
-ax.set_xlabel("Annual log change")
-ax.set_ylabel("Density")
-ax.set_title("Annual Log FX Changes: Histogram with Normal & KDE Overlays")
-ax.legend()
-st.pyplot(fig, clear_figure=True)
+fig1, ax1 = plt.subplots(figsize=(7, 4.25))
+# histogram density
+ax1.hist(x, bins="auto", density=True, alpha=0.6, edgecolor="black")
+ax1.plot(grid, pdf_norm, linewidth=2, label="Normal PDF")
+ax1.plot(grid, pdf_kde, linewidth=2, linestyle="--", label="KDE PDF")
+ax1.set_xlabel("Annual log change")
+ax1.set_ylabel("Density")
+ax1.set_title("Histogram with Normal and KDE PDFs")
+ax1.legend()
+ax1.grid(True, linestyle=":", linewidth=0.8)
+st.pyplot(fig1)
 
 # -------------------------------
 # Tail probabilities
 # -------------------------------
-lower_thr = mu - 1.96 * sigma
-upper_thr = mu + 1.96 * sigma
+st.subheader("Tail probabilities beyond μ ± 1.96σ")
 
-pN_low, pN_high, pN_two = normal_tail_probs(mu, sigma, lower_thr, upper_thr)
+# Normal
+p_tail_normal = tail_probs_normal(mu, sigma, k=1.96)
 
-kde_p_low, kde_p_high, kde_p_two = kde_tail_probs(kde, grid, kde_pdf, lower_thr, upper_thr)
+# KDE numeric integral
+p_tail_kde = tail_probs_kde(kde, mu, sigma, grid)
 
-emp_p_low, emp_p_high, emp_p_two = empirical_tail_props(x, lower_thr, upper_thr)
+# Empirical
+threshold = 1.96 * sigma
+p_tail_emp = float(np.mean(np.abs(x - mu) > threshold))
 
-st.subheader("Tail risk beyond μ ± 1.96σ")
-st.markdown(f"""
-| Model | P(X ≤ μ−1.96σ) | P(X ≥ μ+1.96σ) | Two-tail |
-|---|---:|---:|---:|
-| **Normal** | {pN_low:.4%} | {pN_high:.4%} | {pN_two:.4%} |
-| **KDE (non-parametric)** | {kde_p_low:.4%} | {kde_p_high:.4%} | {kde_p_two:.4%} |
-| **Empirical** | {emp_p_low:.4%} | {emp_p_high:.4%} | {emp_p_two:.4%} |
-""")
+tt1, tt2, tt3 = st.columns(3)
+tt1.metric("Normal model", f"{p_tail_normal:.4f}")
+tt2.metric("KDE model", f"{p_tail_kde:.4f}")
+tt3.metric("Empirical proportion", f"{p_tail_emp:.4f}")
 
-st.caption("Under a true Normal, the two-tail probability at ±1.96σ is ≈ 5%. Deviations above this suggest fat tails.")
+st.caption(
+    "Note: Under a Normal distribution, P(|X−μ|>1.96σ) ≈ 0.0500. "
+    "Differences between KDE and Normal highlight fat/thin tails in the data."
+)
 
 # -------------------------------
-# Data export
+# Data preview
 # -------------------------------
-with st.expander("Download transformed data (annual log changes)"):
-    out = panel.copy()
-    out = out.reset_index()
-    csv_buf = io.StringIO()
-    out.to_csv(csv_buf, index=False)
-    st.download_button("Download CSV", data=csv_buf.getvalue(), file_name="annual_log_changes.csv", mime="text/csv")
+with st.expander("Show computed series"):
+    st.dataframe(panel[["annual_log_change"]].rename(columns={"annual_log_change": "Annual log change"}), use_container_width=True)
 
-st.success("Done. Explore different KDE bandwidths to see how tail estimates change. Try crisis periods vs tranquil periods for contrast.")
+st.success("Done.")
