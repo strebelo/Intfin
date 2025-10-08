@@ -1,308 +1,221 @@
 # fx_volatility.py
-# Streamlit app: Annual Log FX Changes — Normal vs. Fat Tails
-# Gaussian KDE with cross-validated bandwidth (scikit-learn)
+# Streamlit app: Annual Log FX Changes — Normal vs. Fat Tails (interactive)
 #
 # Run: streamlit run fx_volatility.py
-# Requirements: numpy, pandas, scipy, matplotlib, scikit-learn, streamlit
 
+import io
 import numpy as np
 import pandas as pd
 import streamlit as st
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+from streamlit_plotly_events import plotly_events
 from scipy import stats
 
-from sklearn.model_selection import GridSearchCV, KFold
-from sklearn.neighbors import KernelDensity
+# Optional KDE with CV bandwidth (sklearn)
+KDE_AVAILABLE = True
+try:
+    from sklearn.model_selection import GridSearchCV, KFold
+    from sklearn.neighbors import KernelDensity
+except Exception:
+    KDE_AVAILABLE = False
 
-st.set_page_config(page_title="FX Annual Log Changes — Normal vs Fat Tails", layout="wide")
+st.set_page_config(page_title="FX Annual Changes — Normal vs. Fat Tails", layout="wide")
 
-# -------------------------------
-# Helpers
-# -------------------------------
-
-def parse_input_file(uploaded_file) -> pd.DataFrame:
-    name = uploaded_file.name.lower()
-    if name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-    elif name.endswith(".xlsx") or name.endswith(".xls"):
-        df = pd.read_excel(uploaded_file)
-    else:
-        # Fallback: try CSV
-        df = pd.read_csv(uploaded_file)
-    return df
-
-def coerce_datetime(series: pd.Series):
-    # robust datetime coercion
-    return pd.to_datetime(series, errors="coerce", infer_datetime_format=True)
-
-def normalize_colname(s: str) -> str:
-    return "".join(ch for ch in s.lower().strip() if ch.isalnum())
-
-def guess_columns(df: pd.DataFrame):
-    # Heuristic guessing for date & price columns (handles e.g., "Spot rate")
-    norm_map = {col: normalize_colname(col) for col in df.columns}
-    inv_map = {v: k for k, v in norm_map.items()}
-
-    date_candidates = ["date", "month", "period", "observationdate"]
-    price_candidates = [
-        "spotrate", "spot", "rate", "price", "exchangerate", "fx", "spotusd", "usdusd"
-    ]
-
-    date_col = None
-    for cand in date_candidates:
-        if cand in inv_map:
-            date_col = inv_map[cand]
-            break
-    if date_col is None:
-        # fallback: first column that parses mostly to dates
-        for col in df.columns:
-            dt = pd.to_datetime(df[col], errors="coerce", infer_datetime_format=True)
-            if dt.notna().mean() > 0.8:
-                date_col = col
-                break
-
-    price_col = None
-    for cand in price_candidates:
-        if cand in inv_map:
-            price_col = inv_map[cand]
-            break
-    if price_col is None:
-        # fallback: first mostly-numeric column != date
-        for col in df.columns:
-            if col != date_col and pd.to_numeric(df[col], errors="coerce").notna().mean() > 0.9:
-                price_col = col
-                break
-
-    return date_col, price_col
-
-def compute_annual_log_changes(df: pd.DataFrame, date_col: str, price_col: str) -> pd.DataFrame:
-    out = df[[date_col, price_col]].copy()
-    out[date_col] = coerce_datetime(out[date_col])
-    out = out.dropna(subset=[date_col])
-    out = out.sort_values(date_col)
-    out = out.set_index(date_col)
-    out = out.loc[:, [price_col]].astype(float)
-    out["log_price"] = np.log(out[price_col])
-    out["annual_log_change"] = out["log_price"] - out["log_price"].shift(12)
-    out = out.dropna(subset=["annual_log_change"])
-    return out
-
-# ===== KDE (Gaussian kernel) with cross-validated bandwidth =====
-
-def fit_kde_cv_gaussian(x: np.ndarray, cv_folds: int = 5):
-    """
-    Fit a 1D Gaussian KDE via scikit-learn with CV-chosen bandwidth.
-    We standardize x -> z, tune bandwidth on z, then map back using change of variables.
-    Returns (kde_estimator, mu, sigma, best_bandwidth_z)
-    """
-    mu = float(np.mean(x))
-    sigma = float(np.std(x, ddof=1))
-    if sigma <= 0:
-        raise ValueError("Standard deviation is zero; KDE cannot be fit.")
-
-    z = (x - mu) / sigma
-    z = z.reshape(-1, 1)
-
-    # Reasonable bandwidth grid on standardized data
-    # (covers narrow to broad smoothing for many economic time series)
-    bandwidths = np.linspace(0.1, 1.5, 25)
-
-    # Ensure valid CV folds
-    n = len(z)
-    k = max(2, min(cv_folds, n // 5))  # keep at least 2 folds, roughly 5 points per fold
-    cv = KFold(n_splits=k, shuffle=True, random_state=42)
-
-    grid = GridSearchCV(
-        KernelDensity(kernel="gaussian"),
-        {"bandwidth": bandwidths},
-        cv=cv,
-        n_jobs=-1
-    )
-    grid.fit(z)
-
-    best_kde = grid.best_estimator_
-    best_bw = float(grid.best_params_["bandwidth"])
-
-    return best_kde, mu, sigma, best_bw
-
-def evaluate_kde_pdf_on_grid(best_kde: KernelDensity, grid_x: np.ndarray, mu: float, sigma: float) -> np.ndarray:
-    """
-    Evaluate the fitted KDE (trained on standardized z) on an x-grid.
-    Use change of variables: f_X(x) = f_Z(z)/sigma with z=(x-mu)/sigma.
-    """
-    zgrid = ((grid_x - mu) / sigma).reshape(-1, 1)
-    logpdf_z = best_kde.score_samples(zgrid)
-    pdf_x = np.exp(logpdf_z) / sigma
-    return pdf_x
-
-def normal_pdf(x, mu, sigma):
-    return stats.norm.pdf(x, loc=mu, scale=sigma)
-
-def tail_prob_from_pdf(grid_x: np.ndarray, pdf_x: np.ndarray, mu: float, sigma: float, k: float = 1.96) -> float:
-    mask = (np.abs(grid_x - mu) > k * sigma)
-    if not np.any(mask):
-        return 0.0
-    return float(np.trapz(pdf_x[mask], grid_x[mask]))
-
-def tail_prob_normal(k: float = 1.96) -> float:
-    # P(|Z| > k) for standard normal
-    return float(2 * (1 - stats.norm.cdf(k)))
-
-# -------------------------------
-# UI
-# -------------------------------
-
-st.title("Annual Log FX Changes — Normal vs. Fat Tails (CV Gaussian KDE)")
+st.title("Annual Log FX Changes — Interactive Histogram")
 
 st.markdown(
-    """
-Upload **monthly** spot exchange rates (CSV or Excel).  
-We compute the **annual log change** \\(\\Delta \\ell_t = \\log S_t - \\log S_{t-12}\\), then compare a Normal model with a **Kernel Density Estimation (Gaussian kernel, bandwidth via cross-validation)** and report tail risks.
-"""
+    "Upload a **monthly** FX spot series (CSV/XLS/XLSX) with a date column and a spot column. "
+    "The app computes annual log changes (log Sₜ − log Sₜ₋₁₂), tests normality, and visualizes the distribution."
 )
 
-uploaded = st.file_uploader("Upload CSV or Excel with a Date column and a Spot Rate column", type=["csv", "xlsx", "xls"])
+# -----------------------
+# File upload & parsing
+# -----------------------
+file = st.file_uploader("Upload file", type=["csv", "xls", "xlsx"])
 
-if uploaded is None:
-    st.info("Awaiting file upload…")
-    st.stop()
+def read_table(f):
+    if f is None:
+        return None
+    name = f.name.lower()
+    if name.endswith(".csv"):
+        data = pd.read_csv(f)
+    else:
+        data = pd.read_excel(f)
+    return data
 
-# Read and infer columns
-try:
-    raw = parse_input_file(uploaded)
-except Exception as e:
-    st.error(f"Could not read the file: {e}")
-    st.stop()
+def coerce_date_col(df):
+    # Heuristics: look for a column named 'date' (any case) or the first column that parses as dates
+    date_candidates = [c for c in df.columns if c.lower() in ["date", "month", "period"]]
+    if date_candidates:
+        dc = date_candidates[0]
+    else:
+        dc = df.columns[0]  # fallback to first column
+    out = df.copy()
+    out[dc] = pd.to_datetime(out[dc], errors="coerce")
+    out = out.dropna(subset=[dc]).rename(columns={dc: "Date"})
+    return out
 
-if raw.empty:
-    st.error("The uploaded file is empty.")
-    st.stop()
+def find_spot_col(df):
+    # Try common names; else take the first numeric column that's not Date
+    candidates = [c for c in df.columns if c.lower().strip() in ["spot", "spot rate", "spot_rate", "price", "value", "fx", "rate"]]
+    if candidates:
+        return candidates[0]
+    # find the first numeric non-date column
+    for c in df.columns:
+        if c == "Date":
+            continue
+        if pd.api.types.is_numeric_dtype(df[c]):
+            return c
+    return None
 
-date_guess, price_guess = guess_columns(raw)
+if file:
+    raw = read_table(file)
+    try:
+        tbl = coerce_date_col(raw)
+    except Exception:
+        st.error("Could not identify/parse a Date column.")
+        st.stop()
 
-col1, col2 = st.columns(2)
-with col1:
-    date_col = st.selectbox(
-        "Date column",
-        options=list(raw.columns),
-        index=(list(raw.columns).index(date_guess) if date_guess in raw.columns else 0)
+    spot_col = find_spot_col(tbl)
+    if spot_col is None:
+        st.error("Could not find a numeric spot column. Please include a column like 'Spot rate'.")
+        st.stop()
+
+    df = tbl[["Date", spot_col]].dropna().sort_values("Date").reset_index(drop=True)
+    df = df.set_index("Date").asfreq("MS").interpolate()  # enforce monthly start; fill gaps if any
+    df = df.reset_index()
+
+    st.success(f"Detected date column **Date** and spot column **{spot_col}**.")
+    st.write(df.head())
+
+    # -----------------------------------------
+    # Compute annual log changes (12-month diff)
+    # -----------------------------------------
+    df["log_spot"] = np.log(df[spot_col])
+    df["ann_log_change"] = df["log_spot"].diff(12)
+
+    series = df["ann_log_change"].dropna()
+    if len(series) < 20:
+        st.warning("Not enough 12-month observations to proceed (need ≥ 20).")
+        st.stop()
+
+    st.subheader("Summary Statistics")
+    mean_ = series.mean()
+    std_ = series.std(ddof=1)
+    skew_ = stats.skew(series, bias=False)
+    kurtosis_raw = stats.kurtosis(series, fisher=False, bias=False)  # NOT excess
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Mean (annual log change)", f"{mean_:.4f}")
+    c2.metric("Std. Dev.", f"{std_:.4f}")
+    c3.metric("Skewness", f"{skew_:.4f}")
+    c4.metric("Kurtosis (raw)", f"{kurtosis_raw:.4f}")
+
+    # ----------------------
+    # Normality tests (only SW & AD)
+    # ----------------------
+    st.subheader("Normality Tests")
+    sh_w, sh_p = stats.shapiro(series)
+    st.write(f"**Shapiro–Wilk:** W = {sh_w:.4f}, p-value = {sh_p:.4f}")
+
+    ad_res = stats.anderson(series, dist="norm")
+    st.write(f"**Anderson–Darling:** A² = {ad_res.statistic:.4f}")
+    with st.expander("Anderson–Darling critical values"):
+        for cv, sig in zip(ad_res.critical_values, ad_res.significance_level):
+            st.write(f"- {int(sig)}%: {cv:.3f}  → reject if A² > {cv:.3f}")
+
+    st.caption(
+        "Interpretation: Shapiro–Wilk p < 0.05 ⇒ reject normality. "
+        "Anderson–Darling statistic above a critical value ⇒ reject at that significance level."
     )
-with col2:
-    price_col = st.selectbox(
-        "Spot rate column",
-        options=list(raw.columns),
-        index=(list(raw.columns).index(price_guess) if price_guess in raw.columns else (1 if len(raw.columns) > 1 else 0))
-    )
 
-# Compute annual log changes
-try:
-    panel = compute_annual_log_changes(raw, date_col, price_col)
-except Exception as e:
-    st.error(f"Problem computing annual log changes: {e}")
-    st.stop()
+    # ---------------------------------------
+    # Histogram + interactive click-to-read
+    # ---------------------------------------
+    st.subheader("Distribution (Interactive Histogram)")
+    col_left, col_right = st.columns([2, 1], vertical_alignment="top")
 
-if panel["annual_log_change"].empty:
-    st.warning("Not enough data to compute 12-month log changes. Provide at least 13 monthly observations.")
-    st.stop()
+    with col_right:
+        show_norm = st.checkbox("Show Normal overlay", value=True)
+        show_kde = st.checkbox("Show Kernel Density Estimation overlay", value=False,
+                               help="Gaussian kernel with cross-validated bandwidth (if scikit-learn is available).")
+        bins = st.number_input("Bins", min_value=8, max_value=80, value=24, step=1)
 
-x = panel["annual_log_change"].dropna().values
+    with col_left:
+        # Build histogram as probability (fraction per bin)
+        hist_counts, bin_edges = np.histogram(series.values, bins=bins, density=False)
+        fractions = hist_counts / len(series)
+        bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
+        bin_widths = np.diff(bin_edges)
 
-# Summary stats
-mu = float(np.mean(x))
-sigma = float(np.std(x, ddof=1))
-skew = float(stats.skew(x, bias=False))
-kurt = float(stats.kurtosis(x, fisher=False, bias=False))  # Pearson kurtosis; Normal = 3
+        fig = go.Figure()
 
-# Normality tests
-jb_stat, jb_p = stats.jarque_bera(x)
-sh_stat, sh_p = stats.shapiro(x) if len(x) <= 5000 else (np.nan, np.nan)
-ks_stat, ks_p = stats.kstest((x - mu) / sigma, "norm")
+        fig.add_bar(
+            x=bin_centers,
+            y=fractions,
+            width=bin_widths,
+            name="Histogram (fraction)",
+            hovertemplate="Bin center: %{x:.4f}<br>Fraction: %{y:.4f}<extra></extra>",
+            marker_line_color="black",
+            marker_line_width=1,
+            opacity=0.75,
+        )
 
-# Fit CV Gaussian KDE
-try:
-    kde_cv, mu_kde, sigma_kde, best_bw = fit_kde_cv_gaussian(x, cv_folds=5)
-except Exception as e:
-    st.error(f"KDE fit failed: {e}")
-    st.stop()
+        # Prepare x-grid for overlays
+        x_grid = np.linspace(bin_edges[0], bin_edges[-1], 400)
+        bw_for_prob = np.mean(bin_widths)  # to convert density→probability-per-bin: multiply by bin width
 
-st.subheader("Summary statistics")
-mcol1, mcol2, mcol3, mcol4 = st.columns(4)
-mcol1.metric("Mean (μ)", f"{mu:.4f}")
-mcol2.metric("Std (σ)", f"{sigma:.4f}")
-mcol3.metric("Skewness (Normal = 0)", f"{skew:.4f}")
-mcol4.metric("Kurtosis (Normal = 3)", f"{kurt:.4f}")
+        # Normal overlay (match histogram scale: prob mass per avg bin)
+        if show_norm:
+            from math import sqrt, pi, exp
+            mu, sd = mean_, std_
+            if sd > 0:
+                norm_pdf = (1.0 / (sd * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x_grid - mu) / sd) ** 2)
+                norm_prob_per_bin = norm_pdf * bw_for_prob
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_grid,
+                        y=norm_prob_per_bin,
+                        mode="lines",
+                        name="Normal (μ, σ) × bin width",
+                        hovertemplate="x: %{x:.4f}<br>Prob/bin: %{y:.5f}<extra></extra>",
+                    )
+                )
 
-st.caption(f"Kernel Density Estimation: Gaussian kernel with CV bandwidth on standardized data. Best bandwidth (z-scale) = {best_bw:.3f}, CV folds chosen adaptively.")
+        # KDE overlay (Gaussian kernel + CV bandwidth), plotted as prob per avg bin
+        if show_kde:
+            if KDE_AVAILABLE:
+                X = series.values.reshape(-1, 1)
+                # Bandwidth grid: log-spaced over a reasonable range
+                bw_grid = np.logspace(-3, 0, 30)
+                cv = KFold(n_splits=min(10, len(series)//5 if len(series) >= 50 else 5), shuffle=True, random_state=42)
+                grid = GridSearchCV(KernelDensity(kernel="gaussian"), {"bandwidth": bw_grid}, cv=cv)
+                grid.fit(X)
+                best_bw = grid.best_params_["bandwidth"]
 
-st.subheader("Normality tests")
-t1, t2, t3 = st.columns(3)
-with t1:
-    st.write("**Jarque–Bera**")
-    st.write(f"stat = {jb_stat:.3f}, p = {jb_p:.3g}")
-with t2:
-    st.write("**Shapiro–Wilk**")
-    st.write("n ≤ 5000 required" if np.isnan(sh_stat) else f"stat = {sh_stat:.3f}, p = {sh_p:.3g}")
-with t3:
-    st.write("**Kolmogorov–Smirnov (vs Normal)**")
-    st.write(f"stat = {ks_stat:.3f}, p = {ks_p:.3g}")
+                kde = KernelDensity(kernel="gaussian", bandwidth=best_bw)
+                kde.fit(X)
+                log_dens = kde.score_samples(x_grid.reshape(-1, 1))
+                dens = np.exp(log_dens)  # density integrates to 1
+                kde_prob_per_bin = dens * bw_for_prob
 
-# -------------------------------
-# Distribution Plot (with toggles)
-# -------------------------------
-st.subheader("Distribution: Histogram with optional overlays")
-ocol1, ocol2 = st.columns(2)
-with ocol1:
-    show_normal = st.checkbox("Show Normal distribution overlay", value=True)
-with ocol2:
-    show_kde = st.checkbox("Show Kernel Density Estimation (CV Gaussian) overlay", value=True)
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_grid,
+                        y=kde_prob_per_bin,
+                        mode="lines",
+                        name=f"KDE (Gaussian, bw={best_bw:.4f}) × bin width",
+                        hovertemplate="x: %{x:.4f}<br>Prob/bin: %{y:.5f}<extra></extra>",
+                    )
+                )
+            else:
+                st.warning(
+                    "KDE overlay requires scikit-learn. Install with `pip install scikit-learn` "
+                    "or uncheck the KDE option."
+                )
 
-# Grid: padding fixed to 1 standard deviation each side beyond [min, max] and ±4σ around μ envelope
-pad_stds = 1.0
-xmin, xmax = np.min(x), np.max(x)
-lo = min(mu - 4 * sigma, xmin) - pad_stds * sigma
-hi = max(mu + 4 * sigma, xmax) + pad_stds * sigma
-grid = np.linspace(lo, hi, 2000)
-
-# Evaluate overlays
-pdf_norm = normal_pdf(grid, mu, sigma) if show_normal else None
-pdf_kde = evaluate_kde_pdf_on_grid(kde_cv, grid, mu_kde, sigma_kde) if show_kde else None
-
-fig1, ax1 = plt.subplots(figsize=(7, 4.25))
-ax1.hist(x, bins="auto", density=True, alpha=0.6, edgecolor="black", label="Histogram")
-
-legend_handles = []
-if show_normal:
-    (lnorm,) = ax1.plot(grid, pdf_norm, linewidth=2, label="Normal PDF")
-    legend_handles.append(lnorm)
-if show_kde:
-    (lkde,) = ax1.plot(grid, pdf_kde, linewidth=2, linestyle="--", label="Kernel Density Estimation (CV Gaussian) PDF")
-    legend_handles.append(lkde)
-
-ax1.set_xlabel("Annual log change")
-ax1.set_ylabel("Density")
-ax1.set_title("Histogram with Optional Normal / KDE Overlays")
-if legend_handles:
-    ax1.legend()
-ax1.grid(True, linestyle=":", linewidth=0.8)
-st.pyplot(fig1)
-
-# -------------------------------
-# Tail probabilities beyond μ ± 1.96σ
-# -------------------------------
-st.subheader("Tail probabilities beyond μ ± 1.96σ")
-
-p_tail_norm = tail_prob_normal(k=1.96)
-
-# Always compute KDE tail on the same grid (even if overlay hidden)
-pdf_kde_full = evaluate_kde_pdf_on_grid(kde_cv, grid, mu_kde, sigma_kde)
-p_tail_kde = tail_prob_from_pdf(grid, pdf_kde_full, mu, sigma, k=1.96)
-
-threshold = 1.96 * sigma
-p_tail_emp = float(np.mean(np.abs(x - mu) > threshold))
-
-tt1, tt2, tt3 = st.columns(3)
-tt1.metric("Normal model", f"{p_tail_norm:.4f}")
-tt2.metric("Kernel Density Estimation (CV Gaussian)", f"{p_tail_kde:.4f}")
-tt3.metric("Empirical proportion", f"{p_tail_emp:.4f}")
-
-st.caption("Under a Normal distribution, P(|X−μ|>1.96σ) ≈ 0.0500. Differences vs. CV Gaussian KDE highlight fat/thin tails.")
+        fig.update_layout(
+            xaxis_title="Annual log change",
+            yaxis_title="Fraction of sample",
+            bargap=0.02,
+            margin=dict(
