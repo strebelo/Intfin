@@ -218,4 +218,24 @@ if file:
             xaxis_title="Annual log change",
             yaxis_title="Fraction of sample",
             bargap=0.02,
-            margin=dict(
+            margin=dict(l=10, r=10, t=40, b=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        )
+
+        # Use plotly_events to capture clicks
+        clicked = plotly_events(fig, override_height=500, override_width="100%")
+
+    # Show clicked fraction (if any)
+    st.caption("Tip: Click a bar to display its fraction below. Hover also shows values.")
+    if clicked and len(clicked) > 0:
+        # Find nearest bin center to clicked x
+        x_click = clicked[0].get("x", None)
+        if x_click is not None:
+            # Index of nearest bin
+            idx = int(np.argmin(np.abs(bin_centers - float(x_click))))
+            st.info(f"Clicked bin center: {bin_centers[idx]:.4f}  •  Fraction of sample: {fractions[idx]:.5f}")
+    else:
+        st.write("")
+
+else:
+    st.info("Upload a file to begin.")
