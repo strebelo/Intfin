@@ -6,3 +6,4 @@ statsmodels
 matplotlib
 openpyxl   # for .xlsx
 xlrd       # only if you’ll upload legacy .xls
+scikit-learn>=1.4
