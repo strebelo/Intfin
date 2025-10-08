@@ -1,17 +1,15 @@
 # fx_volatility.py
-# Streamlit app: Annual Log FX Changes — Normal vs. Fat Tails (interactive)
+# Streamlit app: Annual Log FX Changes — Normal vs. Fat Tails
 #
 # Run: streamlit run fx_volatility.py
 
-import io
 import numpy as np
 import pandas as pd
 import streamlit as st
-import plotly.graph_objects as go
-from streamlit_plotly_events import plotly_events
+import matplotlib.pyplot as plt
 from scipy import stats
 
-# Optional KDE with CV bandwidth (sklearn)
+# Optional: KDE with cross-validated bandwidth
 KDE_AVAILABLE = True
 try:
     from sklearn.model_selection import GridSearchCV, KFold
@@ -21,11 +19,11 @@ except Exception:
 
 st.set_page_config(page_title="FX Annual Changes — Normal vs. Fat Tails", layout="wide")
 
-st.title("Annual Log FX Changes — Interactive Histogram")
+st.title("Annual Log FX Changes — Normal vs. Fat Tails")
 
 st.markdown(
-    "Upload a **monthly** FX spot series (CSV/XLS/XLSX) with a date column and a spot column. "
-    "The app computes annual log changes (log Sₜ − log Sₜ₋₁₂), tests normality, and visualizes the distribution."
+    "Upload a **monthly FX spot rate series** (CSV/XLS/XLSX) with a date column and a spot column. "
+    "The app computes annual log changes (log Sₜ − log Sₜ₋₁₂), tests for normality, and visualizes the distribution."
 )
 
 # -----------------------
@@ -34,86 +32,74 @@ st.markdown(
 file = st.file_uploader("Upload file", type=["csv", "xls", "xlsx"])
 
 def read_table(f):
-    if f is None:
-        return None
-    name = f.name.lower()
-    if name.endswith(".csv"):
-        data = pd.read_csv(f)
+    if f.name.lower().endswith(".csv"):
+        return pd.read_csv(f)
     else:
-        data = pd.read_excel(f)
-    return data
+        return pd.read_excel(f)
 
 def coerce_date_col(df):
-    # Heuristics: look for a column named 'date' (any case) or the first column that parses as dates
     date_candidates = [c for c in df.columns if c.lower() in ["date", "month", "period"]]
     if date_candidates:
         dc = date_candidates[0]
     else:
-        dc = df.columns[0]  # fallback to first column
-    out = df.copy()
-    out[dc] = pd.to_datetime(out[dc], errors="coerce")
-    out = out.dropna(subset=[dc]).rename(columns={dc: "Date"})
-    return out
+        dc = df.columns[0]
+    df = df.rename(columns={dc: "Date"})
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    return df.dropna(subset=["Date"])
 
 def find_spot_col(df):
-    # Try common names; else take the first numeric column that's not Date
-    candidates = [c for c in df.columns if c.lower().strip() in ["spot", "spot rate", "spot_rate", "price", "value", "fx", "rate"]]
+    candidates = [c for c in df.columns if c.lower() in ["spot", "spot rate", "spot_rate", "price", "fx", "rate", "value"]]
     if candidates:
         return candidates[0]
-    # find the first numeric non-date column
     for c in df.columns:
-        if c == "Date":
-            continue
-        if pd.api.types.is_numeric_dtype(df[c]):
+        if c != "Date" and pd.api.types.is_numeric_dtype(df[c]):
             return c
     return None
 
 if file:
-    raw = read_table(file)
-    try:
-        tbl = coerce_date_col(raw)
-    except Exception:
-        st.error("Could not identify/parse a Date column.")
-        st.stop()
-
-    spot_col = find_spot_col(tbl)
+    df = read_table(file)
+    df = coerce_date_col(df)
+    spot_col = find_spot_col(df)
     if spot_col is None:
-        st.error("Could not find a numeric spot column. Please include a column like 'Spot rate'.")
+        st.error("Could not find a numeric spot column.")
         st.stop()
 
-    df = tbl[["Date", spot_col]].dropna().sort_values("Date").reset_index(drop=True)
-    df = df.set_index("Date").asfreq("MS").interpolate()  # enforce monthly start; fill gaps if any
+    df = df[["Date", spot_col]].dropna().sort_values("Date").reset_index(drop=True)
+    df = df.set_index("Date").asfreq("MS").interpolate()
     df = df.reset_index()
 
     st.success(f"Detected date column **Date** and spot column **{spot_col}**.")
     st.write(df.head())
 
-    # -----------------------------------------
-    # Compute annual log changes (12-month diff)
-    # -----------------------------------------
+    # ------------------------------
+    # Compute annual log changes
+    # ------------------------------
     df["log_spot"] = np.log(df[spot_col])
     df["ann_log_change"] = df["log_spot"].diff(12)
-
     series = df["ann_log_change"].dropna()
+
     if len(series) < 20:
-        st.warning("Not enough 12-month observations to proceed (need ≥ 20).")
+        st.warning("Not enough 12-month observations (need at least 20).")
         st.stop()
 
+    # ------------------------------
+    # Summary statistics
+    # ------------------------------
     st.subheader("Summary Statistics")
     mean_ = series.mean()
     std_ = series.std(ddof=1)
     skew_ = stats.skew(series, bias=False)
-    kurtosis_raw = stats.kurtosis(series, fisher=False, bias=False)  # NOT excess
+    kurt_ = stats.kurtosis(series, fisher=False, bias=False)  # raw kurtosis
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Mean (annual log change)", f"{mean_:.4f}")
+    c1.metric("Mean", f"{mean_:.4f}")
     c2.metric("Std. Dev.", f"{std_:.4f}")
     c3.metric("Skewness", f"{skew_:.4f}")
-    c4.metric("Kurtosis (raw)", f"{kurtosis_raw:.4f}")
+    c4.metric("Kurtosis", f"{kurt_:.4f}")
 
-    # ----------------------
-    # Normality tests (only SW & AD)
-    # ----------------------
+    # ------------------------------
+    # Normality tests
+    # ------------------------------
     st.subheader("Normality Tests")
     sh_w, sh_p = stats.shapiro(series)
     st.write(f"**Shapiro–Wilk:** W = {sh_w:.4f}, p-value = {sh_p:.4f}")
@@ -122,120 +108,51 @@ if file:
     st.write(f"**Anderson–Darling:** A² = {ad_res.statistic:.4f}")
     with st.expander("Anderson–Darling critical values"):
         for cv, sig in zip(ad_res.critical_values, ad_res.significance_level):
-            st.write(f"- {int(sig)}%: {cv:.3f}  → reject if A² > {cv:.3f}")
+            st.write(f"- {int(sig)}%: {cv:.3f}")
 
-    st.caption(
-        "Interpretation: Shapiro–Wilk p < 0.05 ⇒ reject normality. "
-        "Anderson–Darling statistic above a critical value ⇒ reject at that significance level."
-    )
+    st.caption("Reject normality if Shapiro–Wilk p < 0.05 or Anderson–Darling statistic > critical value.")
 
-    # ---------------------------------------
-    # Histogram + interactive click-to-read
-    # ---------------------------------------
-    st.subheader("Distribution (Interactive Histogram)")
-    col_left, col_right = st.columns([2, 1], vertical_alignment="top")
+    # ------------------------------
+    # Histogram & overlays
+    # ------------------------------
+    st.subheader("Distribution Visualization")
 
-    with col_right:
-        show_norm = st.checkbox("Show Normal overlay", value=True)
-        show_kde = st.checkbox("Show Kernel Density Estimation overlay", value=False,
-                               help="Gaussian kernel with cross-validated bandwidth (if scikit-learn is available).")
-        bins = st.number_input("Bins", min_value=8, max_value=80, value=24, step=1)
+    show_norm = st.checkbox("Show Normal overlay", value=True)
+    show_kde = st.checkbox("Show Kernel Density Estimation overlay", value=False)
+    bins = st.number_input("Number of bins", min_value=8, max_value=80, value=24, step=1)
 
-    with col_left:
-        # Build histogram as probability (fraction per bin)
-        hist_counts, bin_edges = np.histogram(series.values, bins=bins, density=False)
-        fractions = hist_counts / len(series)
-        bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
-        bin_widths = np.diff(bin_edges)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    counts, bins_edges, patches = ax.hist(series, bins=bins, density=True, alpha=0.6, edgecolor="black")
 
-        fig = go.Figure()
+    x_grid = np.linspace(series.min(), series.max(), 400)
 
-        fig.add_bar(
-            x=bin_centers,
-            y=fractions,
-            width=bin_widths,
-            name="Histogram (fraction)",
-            hovertemplate="Bin center: %{x:.4f}<br>Fraction: %{y:.4f}<extra></extra>",
-            marker_line_color="black",
-            marker_line_width=1,
-            opacity=0.75,
-        )
+    # Normal overlay
+    if show_norm:
+        norm_pdf = stats.norm.pdf(x_grid, loc=mean_, scale=std_)
+        ax.plot(x_grid, norm_pdf, "r--", lw=2, label="Normal (μ, σ)")
 
-        # Prepare x-grid for overlays
-        x_grid = np.linspace(bin_edges[0], bin_edges[-1], 400)
-        bw_for_prob = np.mean(bin_widths)  # to convert density→probability-per-bin: multiply by bin width
+    # KDE overlay (Gaussian kernel + CV bandwidth)
+    if show_kde:
+        if KDE_AVAILABLE:
+            X = series.values.reshape(-1, 1)
+            bw_grid = np.logspace(-3, 0, 30)
+            cv = KFold(n_splits=min(10, len(series)//5 if len(series) >= 50 else 5), shuffle=True, random_state=42)
+            grid = GridSearchCV(KernelDensity(kernel="gaussian"), {"bandwidth": bw_grid}, cv=cv)
+            grid.fit(X)
+            best_bw = grid.best_params_["bandwidth"]
+            kde = KernelDensity(kernel="gaussian", bandwidth=best_bw).fit(X)
+            log_dens = kde.score_samples(x_grid.reshape(-1, 1))
+            ax.plot(x_grid, np.exp(log_dens), "b-", lw=2, label=f"KDE (bw={best_bw:.4f})")
+        else:
+            st.warning("scikit-learn not installed; KDE unavailable.")
 
-        # Normal overlay (match histogram scale: prob mass per avg bin)
-        if show_norm:
-            from math import sqrt, pi, exp
-            mu, sd = mean_, std_
-            if sd > 0:
-                norm_pdf = (1.0 / (sd * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x_grid - mu) / sd) ** 2)
-                norm_prob_per_bin = norm_pdf * bw_for_prob
-                fig.add_trace(
-                    go.Scatter(
-                        x=x_grid,
-                        y=norm_prob_per_bin,
-                        mode="lines",
-                        name="Normal (μ, σ) × bin width",
-                        hovertemplate="x: %{x:.4f}<br>Prob/bin: %{y:.5f}<extra></extra>",
-                    )
-                )
+    ax.set_xlabel("Annual log change")
+    ax.set_ylabel("Density")
+    ax.set_title("Distribution of Annual Log FX Changes")
+    ax.legend()
+    ax.grid(True, linestyle="--", alpha=0.6)
 
-        # KDE overlay (Gaussian kernel + CV bandwidth), plotted as prob per avg bin
-        if show_kde:
-            if KDE_AVAILABLE:
-                X = series.values.reshape(-1, 1)
-                # Bandwidth grid: log-spaced over a reasonable range
-                bw_grid = np.logspace(-3, 0, 30)
-                cv = KFold(n_splits=min(10, len(series)//5 if len(series) >= 50 else 5), shuffle=True, random_state=42)
-                grid = GridSearchCV(KernelDensity(kernel="gaussian"), {"bandwidth": bw_grid}, cv=cv)
-                grid.fit(X)
-                best_bw = grid.best_params_["bandwidth"]
-
-                kde = KernelDensity(kernel="gaussian", bandwidth=best_bw)
-                kde.fit(X)
-                log_dens = kde.score_samples(x_grid.reshape(-1, 1))
-                dens = np.exp(log_dens)  # density integrates to 1
-                kde_prob_per_bin = dens * bw_for_prob
-
-                fig.add_trace(
-                    go.Scatter(
-                        x=x_grid,
-                        y=kde_prob_per_bin,
-                        mode="lines",
-                        name=f"KDE (Gaussian, bw={best_bw:.4f}) × bin width",
-                        hovertemplate="x: %{x:.4f}<br>Prob/bin: %{y:.5f}<extra></extra>",
-                    )
-                )
-            else:
-                st.warning(
-                    "KDE overlay requires scikit-learn. Install with `pip install scikit-learn` "
-                    "or uncheck the KDE option."
-                )
-
-        fig.update_layout(
-            xaxis_title="Annual log change",
-            yaxis_title="Fraction of sample",
-            bargap=0.02,
-            margin=dict(l=10, r=10, t=40, b=10),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-        )
-
-        # Use plotly_events to capture clicks
-        clicked = plotly_events(fig, override_height=500, override_width="100%")
-
-    # Show clicked fraction (if any)
-    st.caption("Tip: Click a bar to display its fraction below. Hover also shows values.")
-    if clicked and len(clicked) > 0:
-        # Find nearest bin center to clicked x
-        x_click = clicked[0].get("x", None)
-        if x_click is not None:
-            # Index of nearest bin
-            idx = int(np.argmin(np.abs(bin_centers - float(x_click))))
-            st.info(f"Clicked bin center: {bin_centers[idx]:.4f}  •  Fraction of sample: {fractions[idx]:.5f}")
-    else:
-        st.write("")
+    st.pyplot(fig)
 
 else:
     st.info("Upload a file to begin.")
