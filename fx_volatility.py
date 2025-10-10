@@ -258,39 +258,79 @@ p_tail_emp = float(np.mean(np.abs(x - mu) > threshold))
 
 t1, t2, t3 = st.columns(3)
 t1.metric("Normal model", f"{p_tail_norm:.4f}")
-t2.metric("Kernel Density Estimation (CV Gaussian)", f"{p_tail_kde:.4f}")
+t2.metric("KDE (CV Gaussian)", f"{p_tail_kde:.4f}")
 t3.metric("Empirical proportion", f"{p_tail_emp:.4f}")
 st.caption("Under a Normal distribution, P(|Z|>1.96) ≈ 0.0500. Differences vs. CV Gaussian KDE highlight fat/thin tails.")
 
 # -------------------------------
-# Diagnostics (temporary; safe to delete/comment out)
+# Forecast: Spot path & 95% Normal CI by month
 # -------------------------------
-with st.expander("Diagnostics (temporary; safe to delete)"):
-    total_area = float(np.trapz(pdf_kde_full, grid))
-    st.write(f"DEBUG — KDE total area over grid: **{total_area:.4f}**")
-    st.write(f"DEBUG — grid range: **[{grid.min():.6f}, {grid.max():.6f}]**")
-    st.write(f"DEBUG — μ = {mu:.6f}, σ = {sigma:.6f}, 95% bounds: "
-             f"[{(mu - 1.96*sigma):.6f}, {(mu + 1.96*sigma):.6f}]")
-    st.write(f"DEBUG — Tail (Normal): **{p_tail_norm:.4f}**")
-    st.write(f"DEBUG — Tail (KDE, trapezoid fixed): **{p_tail_kde:.4f}**")
-    st.write(f"DEBUG — Tail (Empirical): **{p_tail_emp:.4f}**")
+st.subheader("Forecast: 95% Normal-confidence interval for the spot by month")
 
-    try:
-        z_samp = kde_cv.sample(100_000, random_state=0)
-        x_samp = mu_kde + sigma_kde * z_samp.ravel()
-        p_tail_mc = float(np.mean(np.abs(x_samp - mu) > 1.96 * sigma))
-        st.write(f"DEBUG — Tail (KDE Monte Carlo ~100k): **{p_tail_mc:.4f}**")
-    except Exception as e:
-        st.write(f"DEBUG — KDE Monte Carlo sampling failed: {e}")
+# Inputs
+default_spot = float(panel[price_col].iloc[-1]) if len(panel) else 1.0
+spot_now = st.number_input("Current spot (S₀)", min_value=0.0, value=round(default_spot, 6), format="%.6f")
+horizon_m = st.number_input("Horizon (months)", min_value=1, max_value=240, value=12, step=1)
 
-    if st.checkbox("Run bandwidth sensitivity check (z-scale)", value=False):
-        bws = [0.20, 0.30, 0.40, 0.60, 0.80, 1.00, 1.20]
-        rows = []
-        z = ((x - mu) / sigma).reshape(-1, 1)
-        for bw in bws:
-            kde_tmp = KernelDensity(kernel="gaussian", bandwidth=bw).fit(z)
-            pdf_tmp = evaluate_kde_pdf_on_grid(kde_tmp, grid, mu, sigma)
-            tail_tmp = tail_prob_from_pdf(grid, pdf_tmp, mu, sigma, 1.96)
-            area_tmp = float(np.trapz(pdf_tmp, grid))
-            rows.append({"bandwidth_z": bw, "kde_tail": tail_tmp, "total_area": area_tmp})
-        st.dataframe(pd.DataFrame(rows))
+# Compute only if valid
+if spot_now <= 0.0:
+    st.warning("Please enter a positive current spot to compute the forecast.")
+else:
+    # Annual -> monthly scaling under Normal i.i.d. log changes assumption
+    mu_month = mu / 12.0
+    sigma_month = sigma / np.sqrt(12.0)
+
+    # For month h: cumulative mean and std of log change
+    months = np.arange(1, int(horizon_m) + 1, dtype=int)
+    mu_h = months * mu_month
+    sigma_h = sigma * np.sqrt(months / 12.0)  # same as sigma_month * sqrt(months)
+
+    # Point forecast and 95% CI for the SPOT (level), using log-normal mapping
+    point = spot_now * np.exp(mu_h)
+    lower = spot_now * np.exp(mu_h - 1.96 * sigma_h)
+    upper = spot_now * np.exp(mu_h + 1.96 * sigma_h)
+
+    # Future dates (month starts) based on last data timestamp, if available
+    last_date = panel.index.max() if isinstance(panel.index, pd.DatetimeIndex) and len(panel.index) else None
+    if pd.notna(last_date):
+        # Next month start then monthly
+        future_dates = pd.date_range((last_date + pd.offsets.MonthBegin(1)).replace(day=1), periods=len(months), freq="MS")
+    else:
+        future_dates = pd.RangeIndex(1, len(months) + 1, name="Month")
+
+    # Table
+    forecast_df = pd.DataFrame({
+        "date": future_dates,
+        "month_ahead": months,
+        "spot_point": point,
+        "spot_lower_95": lower,
+        "spot_upper_95": upper
+    })
+
+    st.dataframe(
+        forecast_df.assign(
+            spot_point=lambda d: d["spot_point"].round(6),
+            spot_lower_95=lambda d: d["spot_lower_95"].round(6),
+            spot_upper_95=lambda d: d["spot_upper_95"].round(6),
+        ),
+        use_container_width=True
+    )
+
+    csv_bytes = forecast_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download forecast table (CSV)",
+        data=csv_bytes,
+        file_name="fx_spot_normal_CI_forecast.csv",
+        mime="text/csv"
+    )
+
+    # Plot the forecast with CI band
+    fig2, ax2 = plt.subplots(figsize=(8, 4.5))
+
+    x_axis = np.arange(len(months))
+    ax2.plot(x_axis, point, linewidth=2, label="Spot point forecast (Normal)")
+    ax2.fill_between(x_axis, lower, upper, alpha=0.2, label="95% CI (Normal)")
+
+    # X ticks as dates or month numbers
+    if isinstance(future_dates, pd.DatetimeIndex):
+        ax2.set_xticks(x_axis[::max(]()
