@@ -118,7 +118,7 @@ def evaluate_kde_pdf_on_grid(best_kde: KernelDensity, grid_x: np.ndarray, mu: fl
 def normal_pdf(x, mu, sigma):
     return stats.norm.pdf(x, loc=mu, scale=sigma)
 
-# --- FIXED TAIL INTEGRATION ---
+# --- FIXED TAIL INTEGRATION (Option A) ---
 def tail_prob_from_pdf(grid_x: np.ndarray, pdf_x: np.ndarray, mu: float, sigma: float, k: float = 1.96) -> float:
     left = mu - k * sigma
     right = mu + k * sigma
@@ -137,89 +137,168 @@ def tail_prob_normal(k: float = 1.96) -> float:
 
 st.title("Annual Log FX Changes — Normal vs. Fat Tails (CV Gaussian KDE)")
 
+st.markdown(
+    """
+Upload **monthly** spot exchange rates (CSV or Excel).  
+We compute the **annual log change** \\(\\Delta \\ell_t = \\log S_t - \\log S_{t-12}\\), then compare a Normal model with a **Kernel Density Estimation (Gaussian kernel, bandwidth via cross-validation)** and report tail risks.
+"""
+)
+
 uploaded = st.file_uploader("Upload CSV or Excel with a Date column and a Spot Rate column", type=["csv", "xlsx", "xls"])
 
 if uploaded is None:
     st.info("Awaiting file upload…")
     st.stop()
 
-raw = parse_input_file(uploaded)
+try:
+    raw = parse_input_file(uploaded)
+except Exception as e:
+    st.error(f"Could not read the file: {e}")
+    st.stop()
+
 if raw.empty:
     st.error("The uploaded file is empty.")
     st.stop()
 
 date_guess, price_guess = guess_columns(raw)
+
 col1, col2 = st.columns(2)
 with col1:
     date_col = st.selectbox("Date column", options=list(raw.columns),
                             index=(list(raw.columns).index(date_guess) if date_guess in raw.columns else 0))
 with col2:
     price_col = st.selectbox("Spot rate column", options=list(raw.columns),
-                             index=(list(raw.columns).index(price_guess) if price_guess in raw.columns else 1))
+                             index=(list(raw.columns).index(price_guess) if price_guess in raw.columns else (1 if len(raw.columns) > 1 else 0)))
 
-panel = compute_annual_log_changes(raw, date_col, price_col)
+try:
+    panel = compute_annual_log_changes(raw, date_col, price_col)
+except Exception as e:
+    st.error(f"Problem computing annual log changes: {e}")
+    st.stop()
+
+if panel["annual_log_change"].empty:
+    st.warning("Not enough data to compute 12-month log changes.")
+    st.stop()
+
 x = panel["annual_log_change"].dropna().values
 mu, sigma = float(np.mean(x)), float(np.std(x, ddof=1))
-kde_cv, mu_kde, sigma_kde, best_bw = fit_kde_cv_gaussian(x, cv_folds=5)
+skew, kurt = float(stats.skew(x, bias=False)), float(stats.kurtosis(x, fisher=False, bias=False))
+
+jb_stat, jb_p = stats.jarque_bera(x)
+sh_stat, sh_p = stats.shapiro(x) if len(x) <= 5000 else (np.nan, np.nan)
+
+try:
+    kde_cv, mu_kde, sigma_kde, best_bw = fit_kde_cv_gaussian(x, cv_folds=5)
+except Exception as e:
+    st.error(f"KDE fit failed: {e}")
+    st.stop()
+
+st.subheader("Summary statistics")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Mean (μ)", f"{mu:.4f}")
+c2.metric("Std (σ)", f"{sigma:.4f}")
+c3.metric("Skewness (Normal = 0)", f"{skew:.4f}")
+c4.metric("Kurtosis (Normal = 3)", f"{kurt:.4f}")
+st.caption(f"Best KDE bandwidth (z-scale): {best_bw:.3f}")
+
+st.subheader("Normality tests")
+t1, t2 = st.columns(2)
+t1.write("**Jarque–Bera**")
+t1.write(f"stat = {jb_stat:.3f}, p = {jb_p:.3g}")
+t2.write("**Shapiro–Wilk**")
+t2.write("n ≤ 5000 required" if np.isnan(sh_stat) else f"stat = {sh_stat:.3f}, p = {sh_p:.3g}")
 
 # -------------------------------
-# Forecast Section
+# Distribution Plot (with toggles)
+# -------------------------------
+st.subheader("Distribution: Histogram with optional overlays")
+ocol1, ocol2, ocol3 = st.columns(3)
+show_normal = ocol1.checkbox("Show Normal distribution overlay", True)
+show_kde = ocol2.checkbox("Show Kernel Density Estimation (CV Gaussian) overlay", True)
+show_ci = ocol3.checkbox("Show 95% Normal interval (μ ± 1.96σ)", True)
+
+pad_stds = 1.0
+xmin, xmax = np.min(x), np.max(x)
+lo = min(mu - 4 * sigma, xmin) - pad_stds * sigma
+hi = max(mu + 4 * sigma, xmax) + pad_stds * sigma
+grid = np.linspace(lo - 0.5 * sigma, hi + 0.5 * sigma, 4000)
+
+pdf_norm = normal_pdf(grid, mu, sigma) if show_normal else None
+pdf_kde = evaluate_kde_pdf_on_grid(kde_cv, grid, mu_kde, sigma_kde) if show_kde else None
+
+fig1, ax1 = plt.subplots(figsize=(7, 4.25))
+ax1.hist(x, bins="auto", density=True, alpha=0.6, edgecolor="black", label="Histogram")
+
+if show_ci:
+    left, right = mu - 1.96 * sigma, mu + 1.96 * sigma
+    ax1.axvspan(left, right, alpha=0.15, label="95% Normal interval (μ ± 1.96σ)")
+if show_normal:
+    ax1.plot(grid, pdf_norm, linewidth=2, label="Normal PDF")
+if show_kde:
+    ax1.plot(grid, pdf_kde, linewidth=2, linestyle="--", label="Kernel Density Estimation (CV Gaussian) PDF")
+
+ax1.set_xlabel("Annual log change")
+ax1.set_ylabel("Density")
+ax1.set_title("Histogram with Optional Normal / KDE Overlays")
+ax1.grid(True, linestyle=":", linewidth=0.8)
+ax1.legend(loc="upper center", bbox_to_anchor=(0.5, -0.12), ncol=2, frameon=False, fontsize="small")
+plt.tight_layout()
+plt.subplots_adjust(bottom=0.25)
+st.pyplot(fig1)
+
+# -------------------------------
+# Tail probabilities beyond μ ± 1.96σ
+# -------------------------------
+st.subheader("Tail probabilities beyond μ ± 1.96σ")
+p_tail_norm = tail_prob_normal(1.96)
+pdf_kde_full = evaluate_kde_pdf_on_grid(kde_cv, grid, mu_kde, sigma_kde)
+p_tail_kde = tail_prob_from_pdf(grid, pdf_kde_full, mu, sigma, 1.96)
+threshold = 1.96 * sigma
+p_tail_emp = float(np.mean(np.abs(x - mu) > threshold))
+
+t1, t2, t3 = st.columns(3)
+t1.metric("Normal model", f"{p_tail_norm:.4f}")
+t2.metric("KDE (CV Gaussian)", f"{p_tail_kde:.4f}")
+t3.metric("Empirical proportion", f"{p_tail_emp:.4f}")
+st.caption("Under a Normal distribution, P(|Z|>1.96) ≈ 0.0500. Differences vs. CV Gaussian KDE highlight fat/thin tails.")
+
+# -------------------------------
+# Forecast: Spot path & 95% Normal CI by month
 # -------------------------------
 st.subheader("Forecast: 95% Normal-confidence interval for the spot by month")
 
-spot_col = panel.columns[0]
-last_spot = float(panel[spot_col].iloc[-1])
-min_spot = float(panel[spot_col].min())
-max_spot = float(panel[spot_col].max())
-
-spot_source = st.selectbox(
-    "Spot source for forecast (S₀)",
-    ["Custom input", "Last observed in data", "Historical MIN in data", "Historical MAX in data"],
-    index=0
-)
-
-if spot_source == "Custom input":
-    spot_now = st.number_input("Current spot (S₀)", min_value=0.0, value=round(last_spot, 6), format="%.6f")
-elif spot_source == "Last observed in data":
-    spot_now = last_spot
-elif spot_source == "Historical MIN in data":
-    spot_now = min_spot
-else:
-    spot_now = max_spot
-
+# Inputs
+default_spot = float(panel[price_col].iloc[-1]) if len(panel) else 1.0
+spot_now = st.number_input("Current spot (S₀)", min_value=0.0, value=round(default_spot, 6), format="%.6f")
 horizon_m = st.number_input("Horizon (months)", min_value=1, max_value=240, value=12, step=1)
-drift_source = st.selectbox(
-    "Mean rate of change (drift) source",
-    ["Historical mean (annual log Δ from data)", "Zero drift", "Custom annualized drift (% per year)"],
-    index=0
-)
-custom_drift_pct = 0.0
-if drift_source == "Custom annualized drift (% per year)":
-    custom_drift_pct = st.number_input("Custom annualized drift (% per year, log-change)", value=0.0, step=0.1, format="%.4f")
 
-if spot_now > 0:
-    if drift_source == "Historical mean (annual log Δ from data)":
-        mu_annual = mu
-    elif drift_source == "Zero drift":
-        mu_annual = 0.0
-    else:
-        mu_annual = float(custom_drift_pct) / 100.0
+# Compute only if valid
+if spot_now <= 0.0:
+    st.warning("Please enter a positive current spot to compute the forecast.")
+else:
+    # Annual -> monthly scaling under Normal i.i.d. log changes assumption
+    mu_month = mu / 12.0
+    sigma_month = sigma / np.sqrt(12.0)
 
-    mu_month = mu_annual / 12.0
+    # For month h: cumulative mean and std of log change
     months = np.arange(1, int(horizon_m) + 1, dtype=int)
     mu_h = months * mu_month
-    sigma_h = sigma * np.sqrt(months / 12.0)
+    sigma_h = sigma * np.sqrt(months / 12.0)  # same as sigma_month * sqrt(months)
 
+    # Point forecast and 95% CI for the SPOT (level), using log-normal mapping
     point = spot_now * np.exp(mu_h)
     lower = spot_now * np.exp(mu_h - 1.96 * sigma_h)
     upper = spot_now * np.exp(mu_h + 1.96 * sigma_h)
 
-    last_date = panel.index.max() if isinstance(panel.index, pd.DatetimeIndex) else None
+    # Future dates (month starts) based on last data timestamp, if available
+    last_date = panel.index.max() if isinstance(panel.index, pd.DatetimeIndex) and len(panel.index) else None
     if pd.notna(last_date):
+        # Next month start then monthly
         future_dates = pd.date_range((last_date + pd.offsets.MonthBegin(1)).replace(day=1), periods=len(months), freq="MS")
     else:
         future_dates = pd.RangeIndex(1, len(months) + 1, name="Month")
 
+    # Table
     forecast_df = pd.DataFrame({
         "date": future_dates,
         "month_ahead": months,
@@ -227,16 +306,38 @@ if spot_now > 0:
         "spot_lower_95": lower,
         "spot_upper_95": upper
     })
-    st.dataframe(forecast_df.round(6), use_container_width=True)
 
-    # ---- Plot forecast with legend BELOW ----
-    fig2, ax2 = plt.subplots(figsize=(8, 4.5))
+    st.dataframe(
+        forecast_df.assign(
+            spot_point=lambda d: d["spot_point"].round(6),
+            spot_lower_95=lambda d: d["spot_lower_95"].round(6),
+            spot_upper_95=lambda d: d["spot_upper_95"].round(6),
+        ),
+        use_container_width=True
+    )
+
+    csv_bytes = forecast_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download forecast table (CSV)",
+        data=csv_bytes,
+        file_name="fx_spot_normal_CI_forecast.csv",
+        mime="text/csv"
+    )
+
+    # -------------------------------
+    # Plot the forecast with CI band
+    # (Legend below; extra space between plot and x-axis)
+    # -------------------------------
+    fig2, ax2 = plt.subplots(figsize=(8.5, 5.0))
+
     x_axis = np.arange(len(months))
     ax2.plot(x_axis, point, linewidth=2, label="Spot point forecast (Normal)")
     ax2.fill_between(x_axis, lower, upper, alpha=0.2, label="95% CI (Normal)")
 
+    # Robust ticks (≈12 ticks max) — avoids slicing bugs
     step = max(1, len(x_axis) // 12)
     tick_idx = np.arange(0, len(x_axis), step)
+
     if isinstance(future_dates, pd.DatetimeIndex):
         ax2.set_xticks(tick_idx)
         ax2.set_xticklabels([d.strftime("%Y-%m") for d in future_dates[tick_idx]], rotation=45, ha="right")
@@ -250,17 +351,55 @@ if spot_now > 0:
     ax2.set_title("Spot forecast under Normal assumption (95% CI)")
     ax2.grid(True, linestyle=":", linewidth=0.8)
 
-    # --- Legend BELOW the chart, neatly spaced ---
-    ax2.legend(
+    # >>> Extra space between graph and x-axis labels <<<
+    ax2.tick_params(axis="x", pad=10)   # more gap from axis line to tick labels
+    ax2.xaxis.labelpad = 14            # more gap from tick labels to axis label
+    ax2.margins(y=0.10)                # add vertical breathing room inside axes
+
+    # Legend BELOW the chart, pushed well away from x-labels
+    leg = ax2.legend(
         loc="upper center",
-        bbox_to_anchor=(0.5, -0.25),
+        bbox_to_anchor=(0.5, -0.28),  # further down
         ncol=2,
         frameon=False,
         fontsize="small"
     )
-    ax2.xaxis.labelpad = 10
+
+    # Tight layout, then add generous bottom margin for labels + legend
     fig2.tight_layout()
-    fig2.subplots_adjust(bottom=0.40)  # extra space for x-labels and legend
+    fig2.subplots_adjust(bottom=0.46)  # increase if you still see crowding
+
     st.pyplot(fig2)
-else:
-    st.warning("Please enter a positive current spot value.")
+
+# -------------------------------
+# Diagnostics (temporary; safe to delete/comment out)
+# -------------------------------
+with st.expander("Diagnostics (temporary; safe to delete)"):
+    total_area = float(np.trapz(pdf_kde_full, grid))
+    st.write(f"DEBUG — KDE total area over grid: **{total_area:.4f}**")
+    st.write(f"DEBUG — grid range: **[{grid.min():.6f}, {grid.max():.6f}]**")
+    st.write(f"DEBUG — μ = {mu:.6f}, σ = {sigma:.6f}, 95% bounds: "
+             f"[{(mu - 1.96*sigma):.6f}, {(mu + 1.96*sigma):.6f}]")
+    st.write(f"DEBUG — Tail (Normal): **{p_tail_norm:.4f}**")
+    st.write(f"DEBUG — Tail (KDE, trapezoid fixed): **{p_tail_kde:.4f}**")
+    st.write(f"DEBUG — Tail (Empirical): **{p_tail_emp:.4f}**")
+
+    try:
+        z_samp = kde_cv.sample(100_000, random_state=0)
+        x_samp = mu_kde + sigma_kde * z_samp.ravel()
+        p_tail_mc = float(np.mean(np.abs(x_samp - mu) > 1.96 * sigma))
+        st.write(f"DEBUG — Tail (KDE Monte Carlo ~100k): **{p_tail_mc:.4f}**")
+    except Exception as e:
+        st.write(f"DEBUG — KDE Monte Carlo sampling failed: {e}")
+
+    if st.checkbox("Run bandwidth sensitivity check (z-scale)", value=False):
+        bws = [0.20, 0.30, 0.40, 0.60, 0.80, 1.00, 1.20]
+        rows = []
+        z = ((x - mu) / sigma).reshape(-1, 1)
+        for bw in bws:
+            kde_tmp = KernelDensity(kernel="gaussian", bandwidth=bw).fit(z)
+            pdf_tmp = evaluate_kde_pdf_on_grid(kde_tmp, grid, mu, sigma)
+            tail_tmp = tail_prob_from_pdf(grid, pdf_tmp, mu, sigma, 1.96)
+            area_tmp = float(np.trapz(pdf_tmp, grid))
+            rows.append({"bandwidth_z": bw, "kde_tail": tail_tmp, "total_area": area_tmp})
+        st.dataframe(pd.DataFrame(rows))
