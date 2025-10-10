@@ -135,7 +135,7 @@ def tail_prob_normal(k: float = 1.96) -> float:
 # UI
 # -------------------------------
 
-st.title("Annual Log FX Changes — Normal vs. Fat Tails (CV Gaussian KDE)")
+st.title("Distribution of changes in exchange rates")
 
 st.markdown(
     """
