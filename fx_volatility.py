@@ -180,6 +180,7 @@ if panel["annual_log_change"].empty:
     st.warning("Not enough data to compute 12-month log changes.")
     st.stop()
 
+# -------------- Stats from annual log changes --------------
 x = panel["annual_log_change"].dropna().values
 mu, sigma = float(np.mean(x)), float(np.std(x, ddof=1))
 skew, kurt = float(stats.skew(x, bias=False)), float(stats.kurtosis(x, fisher=False, bias=False))
@@ -195,8 +196,8 @@ except Exception as e:
 
 st.subheader("Summary statistics")
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Mean (μ)", f"{mu:.4f}")
-c2.metric("Std (σ)", f"{sigma:.4f}")
+c1.metric("Mean (μ, annual log Δ)", f"{mu:.4f}")
+c2.metric("Std (σ, annual log Δ)", f"{sigma:.4f}")
 c3.metric("Skewness (Normal = 0)", f"{skew:.4f}")
 c4.metric("Kurtosis (Normal = 3)", f"{kurt:.4f}")
 st.caption(f"Best KDE bandwidth (z-scale): {best_bw:.3f}")
@@ -267,18 +268,55 @@ st.caption("Under a Normal distribution, P(|Z|>1.96) ≈ 0.0500. Differences vs.
 # -------------------------------
 st.subheader("Forecast: 95% Normal-confidence interval for the spot by month")
 
-# Inputs
-default_spot = float(panel[price_col].iloc[-1]) if len(panel) else 1.0
-spot_now = st.number_input("Current spot (S₀)", min_value=0.0, value=round(default_spot, 6), format="%.6f")
+# Spot source selection (custom / last / min / max)
+spot_col = panel.columns[0]  # the original price_col after set_index
+last_spot = float(panel[spot_col].iloc[-1])
+min_spot = float(panel[spot_col].min())
+max_spot = float(panel[spot_col].max())
+
+spot_source = st.selectbox(
+    "Spot source for forecast (S₀)",
+    ["Custom input", "Last observed in data", "Historical MIN in data", "Historical MAX in data"],
+    index=0
+)
+
+if spot_source == "Custom input":
+    spot_now = st.number_input("Current spot (S₀)", min_value=0.0, value=round(last_spot, 6), format="%.6f")
+elif spot_source == "Last observed in data":
+    spot_now = last_spot
+elif spot_source == "Historical MIN in data":
+    spot_now = min_spot
+else:
+    spot_now = max_spot
+
 horizon_m = st.number_input("Horizon (months)", min_value=1, max_value=240, value=12, step=1)
 
-# Compute only if valid
+# Drift source selection (historical mean / zero / custom)
+drift_source = st.selectbox(
+    "Mean rate of change (drift) source",
+    ["Historical mean (annual log Δ from data)", "Zero drift", "Custom annualized drift (% per year)"],
+    index=0
+)
+
+custom_drift_pct = 0.0
+if drift_source == "Custom annualized drift (% per year)":
+    custom_drift_pct = st.number_input("Custom annualized drift (% per year, log-change)", value=0.0, step=0.1, format="%.4f")
+
+# Compute only if valid spot
 if spot_now <= 0.0:
-    st.warning("Please enter a positive current spot to compute the forecast.")
+    st.warning("Please select/enter a positive spot level to compute the forecast.")
 else:
+    # Choose drift (annualized μ)
+    if drift_source == "Historical mean (annual log Δ from data)":
+        mu_annual = mu  # from data (annual log Δ mean)
+    elif drift_source == "Zero drift":
+        mu_annual = 0.0
+    else:
+        mu_annual = float(custom_drift_pct) / 100.0  # convert %/yr to decimal per year (log-change)
+
     # Annual -> monthly scaling under Normal i.i.d. log changes assumption
-    mu_month = mu / 12.0
-    sigma_month = sigma / np.sqrt(12.0)
+    mu_month = mu_annual / 12.0
+    sigma_month = sigma / np.sqrt(12.0)  # keep σ from data unless you later add an override
 
     # For month h: cumulative mean and std of log change
     months = np.arange(1, int(horizon_m) + 1, dtype=int)
@@ -303,7 +341,11 @@ else:
         "month_ahead": months,
         "spot_point": point,
         "spot_lower_95": lower,
-        "spot_upper_95": upper
+        "spot_upper_95": upper,
+        "S0_source": spot_source,
+        "drift_source": drift_source,
+        "mu_annual_used": mu_annual,
+        "sigma_annual_used": sigma
     })
 
     st.dataframe(
@@ -330,7 +372,7 @@ else:
     ax2.plot(x_axis, point, linewidth=2, label="Spot point forecast (Normal)")
     ax2.fill_between(x_axis, lower, upper, alpha=0.2, label="95% CI (Normal)")
 
-    # ---- SAFE TICK HANDLING (fixes the earlier SyntaxError and ensures matching labels) ----
+    # ---- SAFE TICK HANDLING ----
     step = max(1, len(x_axis) // 12)  # aim for ~12 ticks max
     tick_idx = np.arange(0, len(x_axis), step)
 
@@ -342,7 +384,7 @@ else:
         ax2.set_xticks(tick_idx)
         ax2.set_xticklabels([str(m) for m in months[tick_idx]], rotation=0, ha="center")
         ax2.set_xlabel("Months ahead")
-    # ---------------------------------------------------------------------------------------
+    # -----------------------------
 
     ax2.set_ylabel("Spot")
     ax2.set_title("Spot forecast under Normal assumption (95% CI)")
@@ -359,8 +401,8 @@ with st.expander("Diagnostics (temporary; safe to delete)"):
     total_area = float(np.trapz(pdf_kde_full, grid))
     st.write(f"DEBUG — KDE total area over grid: **{total_area:.4f}**")
     st.write(f"DEBUG — grid range: **[{grid.min():.6f}, {grid.max():.6f}]**")
-    st.write(f"DEBUG — μ = {mu:.6f}, σ = {sigma:.6f}, 95% bounds: "
-             f"[{(mu - 1.96*sigma):.6f}, {(mu + 1.96*sigma):.6f}]")
+    st.write(f"DEBUG — μ (annual) used for drift = {mu:.6f} (unless overridden)")
+    st.write(f"DEBUG — σ (annual) used for CI     = {sigma:.6f}")
     st.write(f"DEBUG — Tail (Normal): **{p_tail_norm:.4f}**")
     st.write(f"DEBUG — Tail (KDE, trapezoid fixed): **{p_tail_kde:.4f}**")
     st.write(f"DEBUG — Tail (Empirical): **{p_tail_emp:.4f}**")
