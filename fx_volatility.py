@@ -348,7 +348,7 @@ else:
         ax2.set_xlabel("Months ahead")
 
     ax2.set_ylabel("Spot")
-    ax2.set_title("Spot forecast under Normal assumption (95% CI)")
+    ax2.set_title("95% confidence interval implied by normal distribution")
     ax2.grid(True, linestyle=":", linewidth=0.8)
 
     # >>> Extra space between graph and x-axis labels <<<
