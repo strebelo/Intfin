@@ -82,10 +82,21 @@ def ljung_box_summary(residuals, lags=12):
     pval = float(lb['lb_pvalue'].iloc[0])
     return stat, pval
 
+def _safe_index(guess, columns, fallback_idx=0):
+    """Return a valid index into `columns`:
+       - if `guess` is in columns -> its position
+       - else -> clamped fallback (0-based) within [0, len(columns)-1]
+    """
+    cols = list(columns)
+    if not cols:
+        return 0
+    if guess in cols:
+        return cols.index(guess)
+    return max(0, min(int(fallback_idx), len(cols) - 1))
+
 def recursive_oos_one_step(y_rer, s_nom, infl_diff, p, q, train_frac, infl_is_percent=False):
     """
-    Expanding-window OOS 1-step forecasts (as before).
-    Returns oos DataFrame and metrics.
+    Expanding-window OOS 1-step forecasts.
     """
     df = pd.DataFrame({"RER": y_rer, "S": s_nom, "INF_DIFF": infl_diff}).dropna().copy()
     df["logRER"] = np.log(df["RER"])
@@ -150,20 +161,15 @@ def recursive_oos_multi_h(df_aligned, p, q, train_frac, horizons):
     """
     Multi-horizon expanding-window OOS forecasts on nominal FX in logs.
     df_aligned must contain columns: logRER, logS, INF_DIFF. Index must be time.
-    Returns:
-      summary_df (per-horizon MSEs),
-      per_origin_df (long-table of forecasts & errors for each origin/horizon).
     """
     df = df_aligned.copy()
     n = len(df)
     train_n = max(20, int(np.floor(train_frac * n)))
     train_n = min(train_n, n - 2)
 
-    # Collect per-origin/horizon records
     recs = []
 
     for t in range(train_n, n - 1):
-        # Fit up to t
         y_log = df["logRER"].iloc[:t+1]
         try:
             res = fit_arma_log_rer(y_log, p, q)
@@ -177,22 +183,17 @@ def recursive_oos_multi_h(df_aligned, p, q, train_frac, horizons):
 
         for h in horizons:
             if t + h >= n:
-                continue  # not enough future data to score
+                continue
 
-            # Forecast logRER to t+h
             q_hat_path = res.get_forecast(steps=h).predicted_mean
             q_hat_th = float(q_hat_path.iloc[-1])  # q_{t+h|t}
             dq_hat_th = q_hat_th - q_t
 
-            # Cumulate inflation differential from t+1...t+h (assumed given)
             infl_cum = float(df["INF_DIFF"].iloc[t+1:t+1+h].sum())
 
-            # Nominal log forecast and actual
             s_hat_th = s_t + dq_hat_th + infl_cum
             s_act_th = float(df["logS"].iloc[t+h])
-
-            # Random walk(log) forecast for horizon h is just s_t
-            s_rw_th = s_t
+            s_rw_th = s_t  # RW(log)
 
             recs.append({
                 "origin": df.index[t],
@@ -209,7 +210,6 @@ def recursive_oos_multi_h(df_aligned, p, q, train_frac, horizons):
     if long_df.empty:
         raise ValueError("No valid OOS pairs for the chosen train split and horizons (data too short).")
 
-    # MSE per horizon
     mse = long_df.groupby("horizon")[["err_ARMA", "err_RW"]].apply(lambda g: pd.Series({
         "logMSE_ARMA": np.mean(g["err_ARMA"]**2),
         "logMSE_RW":   np.mean(g["err_RW"]**2),
@@ -256,18 +256,42 @@ date_guess, rer_guess, spot_guess, infl_guess = guess_columns(raw)
 
 st.subheader("Select columns")
 c1, c2, c3, c4 = st.columns(4)
+cols = list(raw.columns)
 with c1:
-    date_col = st.selectbox("Date column", options=list(raw.columns),
-                            index=(list(raw.columns).index(date_guess) if date_guess in raw.columns else 0))
+    date_col = st.selectbox(
+        "Date column",
+        options=cols,
+        index=_safe_index(date_guess, cols, fallback_idx=0)
+    )
 with c2:
-    rer_col = st.selectbox("RER (level) column", options=list(raw.columns),
-                           index=(list(raw.columns).index(rer_guess) if rer_guess in raw.columns else 1))
+    rer_col = st.selectbox(
+        "RER (level) column",
+        options=cols,
+        index=_safe_index(rer_guess, cols, fallback_idx=1)
+    )
 with c3:
-    spot_col = st.selectbox("Nominal Spot (level) column", options=list(raw.columns),
-                            index=(list(raw.columns).index(spot_guess) if spot_guess in raw.columns else 2))
+    spot_col = st.selectbox(
+        "Nominal Spot (level) column",
+        options=cols,
+        index=_safe_index(spot_guess, cols, fallback_idx=2)
+    )
 with c4:
-    infl_col = st.selectbox("Inflation differential column", options=list(raw.columns),
-                            index=(list(raw.columns).index(infl_guess) if infl_guess in raw.columns else 3))
+    infl_col = st.selectbox(
+        "Inflation differential column",
+        options=cols,
+        index=_safe_index(infl_guess, cols, fallback_idx=3)
+    )
+
+# Quick validation
+chosen = [date_col, rer_col, spot_col, infl_col]
+if len(set(chosen)) < 4:
+    st.warning("Some selected columns are the same. Make sure Date, RER, Spot, and Inflation differential are different columns.")
+
+num_cols = [rer_col, spot_col, infl_col]
+non_numeric = [c for c in num_cols if pd.to_numeric(raw[c], errors="coerce").isna().all()]
+if non_numeric:
+    st.error(f"These columns are not numeric: {non_numeric}. Please choose numeric columns.")
+    st.stop()
 
 try:
     panel = ensure_clean_timeseries(raw, date_col, rer_col, spot_col, infl_col)
@@ -278,7 +302,7 @@ except Exception as e:
 # Prepare aligned/log panel for re-use
 panel_aligned = panel.copy()
 panel_aligned["logRER"] = np.log(panel_aligned[rer_col])
-panel_aligned["logS"] = np.log(panel_aligned[spot_col])
+panel_aligned["logS"]   = np.log(panel_aligned[spot_col])
 
 st.subheader("Model configuration")
 mcol1, mcol2, mcol3 = st.columns([1,1,2])
@@ -346,7 +370,7 @@ with st.expander("Residual plots (initial window)"):
     st.pyplot(fig_pacf)
 
 # -------------------------------
-# Recursive OOS (1-step) as before
+# Recursive OOS (1-step)
 # -------------------------------
 st.subheader("Recursive OOS: one-step forecasts & evaluation")
 try:
@@ -385,16 +409,22 @@ st.dataframe(
 )
 
 # -------------------------------
-# NEW: Multi-horizon OOS (1,6,12,24,36,60,120 months)
+# Multi-horizon OOS (1,6,12,24,36,60,120 months)
 # -------------------------------
 st.subheader("Recursive OOS: multi-horizon forecasts vs Random Walk")
-
 default_horizons = [1, 6, 12, 24, 36, 60, 120]
 st.write("Fixed horizons (months):", default_horizons)
 
+# Build the aligned df (logs + INF_DIFF) for multi-horizon function
+df_multi = pd.DataFrame({
+    "logRER": panel_aligned["logRER"],
+    "logS": panel_aligned["logS"],
+    "INF_DIFF": panel_aligned["INF_DIFF"],
+}).dropna()
+
 try:
     mse_by_h, long_table = recursive_oos_multi_h(
-        df_aligned=df_aligned,  # from the 1-step function (already logs & INF_DIFF aligned)
+        df_aligned=df_multi,
         p=int(p), q=int(q),
         train_frac=float(train_frac),
         horizons=default_horizons
@@ -437,25 +467,47 @@ with st.expander("Plot: OOS log-MSE by horizon"):
     figh.subplots_adjust(bottom=0.28)
     st.pyplot(figh)
 
-# Long table download (all origins × horizons)
+# Downloads
+st.download_button(
+    "Download 1-step OOS results (CSV)",
+    data=oos1.reset_index().to_csv(index=False).encode("utf-8"),
+    file_name="oos_1step_nominal_fx_arma_vs_rw.csv",
+    mime="text/csv"
+)
 st.download_button(
     "Download multi-horizon OOS (long table, CSV)",
     data=long_table.to_csv(index=False).encode("utf-8"),
-    file_name="oos_multi_h_long.csv",
+    file_name="oos_multih_nominal_fx_arma_vs_rw.csv",
     mime="text/csv"
 )
 
-# Small preview of long table
-with st.expander("Preview: long table (origins × horizons)"):
-    st.dataframe(
-        long_table.assign(
-            s_log_hat_ARMA=lambda d: d["s_log_hat_ARMA"].round(6),
-            s_log_hat_RW=lambda d: d["s_log_hat_RW"].round(6),
-            s_log_actual=lambda d: d["s_log_actual"].round(6),
-            err_ARMA=lambda d: d["err_ARMA"].round(6),
-            err_RW=lambda d: d["err_RW"].round(6),
-        ).head(200),
-        use_container_width=True
-    )
+# Plot: actual vs forecasts (log nominal)
+with st.expander("Plot: actual vs forecasts (log nominal spot, 1-step)"):
+    fig2, ax2 = plt.subplots(figsize=(9, 4))
+    ax2.plot(oos1.index, oos1["s_log_actual_next"], label="Actual log S", linewidth=1.6)
+    ax2.plot(oos1.index, oos1["s_log_hat_next"], label="ARMA-implied log S forecast", linewidth=1.4)
+    ax2.plot(oos1.index, oos1["s_log_hat_rw"], label="RW(log) forecast", linewidth=1.0, linestyle="--")
+    ax2.set_title("Nominal FX (log): actual vs one-step forecasts")
+    ax2.set_xlabel("Date")
+    ax2.set_ylabel("log(S)")
+    ax2.grid(True, linestyle=":", linewidth=0.8)
+    ax2.legend(loc="upper center", bbox_to_anchor=(0.5, -0.20), ncol=3, frameon=False, fontsize="small")
+    ax2.tick_params(axis="x", pad=8)
+    fig2.tight_layout()
+    fig2.subplots_adjust(bottom=0.28)
+    st.pyplot(fig2)
 
-st.success("Multi-horizon OOS comparison complete — try different (p, q) and train splits to test robustness.")
+# Plot: cumulative squared error difference (ARMA minus RW)
+with st.expander("Plot: cumulative advantage (RW MSE − ARMA MSE), 1-step"):
+    diff = (oos1["s_log_error_RW"]**2 - oos1["s_log_error_ARMA"]**2).cumsum()
+    fig3, ax3 = plt.subplots(figsize=(9, 3.6))
+    ax3.plot(diff.index, diff.values, linewidth=1.6)
+    ax3.axhline(0.0, color="k", lw=0.8)
+    ax3.set_title("Cumulative (RW MSE − ARMA MSE): >0 means ARMA outperforming")
+    ax3.set_xlabel("Date")
+    ax3.set_ylabel("Cumulative MSE difference")
+    ax3.grid(True, linestyle=":", linewidth=0.8)
+    fig3.tight_layout()
+    st.pyplot(fig3)
+
+st.success("All set. Try different (p, q) and training fractions to test robustness across horizons.")
