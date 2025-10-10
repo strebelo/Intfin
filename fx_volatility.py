@@ -293,7 +293,6 @@ else:
     # Future dates (month starts) based on last data timestamp, if available
     last_date = panel.index.max() if isinstance(panel.index, pd.DatetimeIndex) and len(panel.index) else None
     if pd.notna(last_date):
-        # Next month start then monthly
         future_dates = pd.date_range((last_date + pd.offsets.MonthBegin(1)).replace(day=1), periods=len(months), freq="MS")
     else:
         future_dates = pd.RangeIndex(1, len(months) + 1, name="Month")
@@ -331,6 +330,57 @@ else:
     ax2.plot(x_axis, point, linewidth=2, label="Spot point forecast (Normal)")
     ax2.fill_between(x_axis, lower, upper, alpha=0.2, label="95% CI (Normal)")
 
-    # X ticks as dates or month numbers
+    # ---- SAFE TICK HANDLING (fixes the earlier SyntaxError and ensures matching labels) ----
+    step = max(1, len(x_axis) // 12)  # aim for ~12 ticks max
+    tick_idx = np.arange(0, len(x_axis), step)
+
     if isinstance(future_dates, pd.DatetimeIndex):
-        ax2.set_xticks(x_axis[::max(]()
+        ax2.set_xticks(tick_idx)
+        ax2.set_xticklabels([d.strftime("%Y-%m") for d in future_dates[tick_idx]], rotation=45, ha="right")
+        ax2.set_xlabel("Forecast month")
+    else:
+        ax2.set_xticks(tick_idx)
+        ax2.set_xticklabels([str(m) for m in months[tick_idx]], rotation=0, ha="center")
+        ax2.set_xlabel("Months ahead")
+    # ---------------------------------------------------------------------------------------
+
+    ax2.set_ylabel("Spot")
+    ax2.set_title("Spot forecast under Normal assumption (95% CI)")
+    ax2.grid(True, linestyle=":", linewidth=0.8)
+    ax2.legend(loc="upper center", bbox_to_anchor=(0.5, -0.12), ncol=2, frameon=False, fontsize="small")
+    plt.tight_layout()
+    plt.subplots_adjust(bottom=0.28)
+    st.pyplot(fig2)
+
+# -------------------------------
+# Diagnostics (temporary; safe to delete/comment out)
+# -------------------------------
+with st.expander("Diagnostics (temporary; safe to delete)"):
+    total_area = float(np.trapz(pdf_kde_full, grid))
+    st.write(f"DEBUG — KDE total area over grid: **{total_area:.4f}**")
+    st.write(f"DEBUG — grid range: **[{grid.min():.6f}, {grid.max():.6f}]**")
+    st.write(f"DEBUG — μ = {mu:.6f}, σ = {sigma:.6f}, 95% bounds: "
+             f"[{(mu - 1.96*sigma):.6f}, {(mu + 1.96*sigma):.6f}]")
+    st.write(f"DEBUG — Tail (Normal): **{p_tail_norm:.4f}**")
+    st.write(f"DEBUG — Tail (KDE, trapezoid fixed): **{p_tail_kde:.4f}**")
+    st.write(f"DEBUG — Tail (Empirical): **{p_tail_emp:.4f}**")
+
+    try:
+        z_samp = kde_cv.sample(100_000, random_state=0)
+        x_samp = mu_kde + sigma_kde * z_samp.ravel()
+        p_tail_mc = float(np.mean(np.abs(x_samp - mu) > 1.96 * sigma))
+        st.write(f"DEBUG — Tail (KDE Monte Carlo ~100k): **{p_tail_mc:.4f}**")
+    except Exception as e:
+        st.write(f"DEBUG — KDE Monte Carlo sampling failed: {e}")
+
+    if st.checkbox("Run bandwidth sensitivity check (z-scale)", value=False):
+        bws = [0.20, 0.30, 0.40, 0.60, 0.80, 1.00, 1.20]
+        rows = []
+        z = ((x - mu) / sigma).reshape(-1, 1)
+        for bw in bws:
+            kde_tmp = KernelDensity(kernel="gaussian", bandwidth=bw).fit(z)
+            pdf_tmp = evaluate_kde_pdf_on_grid(kde_tmp, grid, mu, sigma)
+            tail_tmp = tail_prob_from_pdf(grid, pdf_tmp, mu, sigma, 1.96)
+            area_tmp = float(np.trapz(pdf_tmp, grid))
+            rows.append({"bandwidth_z": bw, "kde_tail": tail_tmp, "total_area": area_tmp})
+        st.dataframe(pd.DataFrame(rows))
