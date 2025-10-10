@@ -160,7 +160,6 @@ with col2:
 panel = compute_annual_log_changes(raw, date_col, price_col)
 x = panel["annual_log_change"].dropna().values
 mu, sigma = float(np.mean(x)), float(np.std(x, ddof=1))
-
 kde_cv, mu_kde, sigma_kde, best_bw = fit_kde_cv_gaussian(x, cv_folds=5)
 
 # -------------------------------
@@ -230,7 +229,7 @@ if spot_now > 0:
     })
     st.dataframe(forecast_df.round(6), use_container_width=True)
 
-    # ---- Plot forecast with adjusted legend spacing ----
+    # ---- Plot forecast with legend BELOW ----
     fig2, ax2 = plt.subplots(figsize=(8, 4.5))
     x_axis = np.arange(len(months))
     ax2.plot(x_axis, point, linewidth=2, label="Spot point forecast (Normal)")
@@ -251,17 +250,17 @@ if spot_now > 0:
     ax2.set_title("Spot forecast under Normal assumption (95% CI)")
     ax2.grid(True, linestyle=":", linewidth=0.8)
 
-    # --- Improved legend position & spacing ---
+    # --- Legend BELOW the chart, neatly spaced ---
     ax2.legend(
-        loc="lower center",
-        bbox_to_anchor=(0.5, 1.02),
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.25),
         ncol=2,
         frameon=False,
         fontsize="small"
     )
-    ax2.xaxis.labelpad = 8
+    ax2.xaxis.labelpad = 10
     fig2.tight_layout()
-    fig2.subplots_adjust(top=0.88, bottom=0.30)  # gives x-labels and legend breathing room
+    fig2.subplots_adjust(bottom=0.40)  # extra space for x-labels and legend
     st.pyplot(fig2)
 else:
     st.warning("Please enter a positive current spot value.")
