@@ -302,7 +302,7 @@ DF_f_0 = make_discount_factors_constant(r_f, T=T)  # kept for completeness/exten
 # ------------------------------
 # Diagnostics (quick sanity check on CIP with DC/FC quoting)
 # ------------------------------
-with st.expander("Diagnostics: Forward Points (DC/FC)"):
+with st.expander("Diagnostics: Forward Points (Domestic currency/Foreign currency)"):
     try:
         F_01_mid = forward_dc_per_fc_constant_rate(S0, r_d, r_f, 0, 1)
         pts = F_01_mid - S0
@@ -392,14 +392,20 @@ tabs = st.tabs(["Compare Hedging Strategies"])
 with tabs[0]:
     st.markdown("### Strategy Comparison (DC/FC)")
     st.caption(
-        "- **Spot path**: lognormal with drift tied to inflation differential πΔ = (Domestic − Foreign).  \n"
-        "  Uses μ = ln(1+πΔ) − 0.5σ² so that E[S_t/S_{t-1}] = 1+πΔ (positive πΔ ⇒ Domestic depreciation).  \n"
-        "- **Unhedged**: 100% converts at spot S_t (DC/FC).  \n"
-        "- **Hedge-all-at-0**: for each year t, hedge `hₜ × revenue_t` at t=0 using  \n"
-        "  F₀→t = S₀ × ((1+r_d)^t / (1+r_f)^t); the remaining (1−hₜ) converts at spot S_t.  \n"
-        "- **Rolling 1-Year Hedge**: each year t−1, hedge `hₜ × revenue_t` for year t using  \n"
-        "  F_{t-1→t} = S_{t-1} × (1+r_d)/(1+r_f); the remaining (1−hₜ) converts at spot S_t."
+        r"""
+- **Spot path**: lognormal with drift tied to inflation differential $\pi_{\Delta} = (\text{Domestic} - \text{Foreign})$.  
+  Uses $\mu = \ln(1+\pi_{\Delta}) - \tfrac{1}{2}\sigma^2$ so that $\mathbb{E}\!\left[\tfrac{S_t}{S_{t-1}}\right] = 1 + \pi_{\Delta}$ (positive $\pi_{\Delta} \Rightarrow$ Domestic depreciation).  
+
+- **Unhedged**: 100% converts at spot $S_t$ (DC/FC).  
+
+- **Hedge-all-at-0**: for each year $t$, hedge $h_t \times \text{revenue}_t$ at $t=0$ using  
+  $F_{0\rightarrow t} = S_0 \times \frac{(1+r_d)^t}{(1+r_f)^t}$; the remaining $(1-h_t)$ converts at spot $S_t$.  
+
+- **Rolling 1-Year Hedge**: each year $t-1$, hedge $h_t \times \text{revenue}_t$ for year $t$ using  
+  $F_{t-1\rightarrow t} = S_{t-1} \times \frac{1+r_d}{1+r_f}$; the remaining $(1-h_t)$ converts at spot $S_t$.
+"""
     )
+
 
     colA, colB = st.columns([1,1])
     with colA:
