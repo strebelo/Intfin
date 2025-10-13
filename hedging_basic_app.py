@@ -6,6 +6,7 @@
 # - Bid-ask spread scales per year of tenor
 # - Overlayed PV-profit distributions (Hedge-all-at-0 vs Rolling 1-Year)
 # - Cumulative hedge-converted cash flows line chart (both strategies)
+# - NEW: Population expected DC cash flow per year (Unhedged vs Hedge-all-at-0 vs Rolling 1-Year)
 # ==========================
 
 import numpy as np
@@ -52,6 +53,7 @@ def simulate_spot_paths_dc_fc_with_infl_drift(S0_dc_fc, sigma, infl_diff, n_sims
     rng = np.random.default_rng(seed)
     paths = np.empty((n_sims, T+1), dtype=float)
     paths[:, 0] = float(S0_dc_fc)
+    # ensure E[ growth ] = 1 + infl_diff
     mu_adj = np.log1p(infl_diff) - 0.5 * (sigma ** 2)
 
     for t in range(1, T+1):
@@ -142,6 +144,75 @@ def results_constant_h(
         "mean_dc_rev_by_year": np.nanmean(dc_rev_t, axis=0),  # shape (T,)
     }
     return out
+
+# ------------------------------
+# NEW: Closed-form population expectations (no simulation)
+# ------------------------------
+def expected_S_t_population(S0: float, infl_diff: float, t: int) -> float:
+    """
+    Under the simulation design (mu = ln(1+pi_Delta) - 0.5*sigma^2),
+    E[S_t] = S0 * (1 + pi_Delta)^t regardless of sigma.
+    """
+    return float(S0) * (1.0 + float(infl_diff))**int(t)
+
+def expected_dc_revenue_paths_population(
+    S0: float,
+    infl_diff: float,
+    r_d: float,
+    r_f: float,
+    spread_bps_per_year: float,
+    revenue_fc: np.ndarray,
+    h: float,
+) -> dict:
+    """
+    Compute the PER-YEAR population expected DC revenue for:
+    - Unhedged
+    - Hedge-all-at-0 (bid forward with tenor=t)
+    - Rolling 1-Year (bid forward with tenor=1 each year based on S_{t-1})
+    """
+    T = len(revenue_fc)
+    h = float(np.clip(h, 0.0, 1.0))
+    e_cf_unhedged = np.zeros(T, dtype=float)
+    e_cf_all0     = np.zeros(T, dtype=float)
+    e_cf_roll     = np.zeros(T, dtype=float)
+
+    # rolling: 1-year ratio and 1-year bid spread
+    ratio_1y = (1.0 + float(r_d)) / max(1e-12, (1.0 + float(r_f)))
+    s1 = max(0.0, float(spread_bps_per_year)) / 10000.0  # per-year total bps → fraction
+    bid_factor_1y = (1.0 - s1/2.0)
+
+    for t in range(1, T+1):
+        rev_fc = float(revenue_fc[t-1])
+
+        # E[S_t]
+        E_S_t = expected_S_t_population(S0, infl_diff, t)
+
+        # Unhedged: E[rev_fc * S_t]
+        e_unh = rev_fc * E_S_t
+        e_cf_unhedged[t-1] = e_unh
+
+        # Hedge-all-at-0:
+        #  hedged leg uses bid F_{0->t} mid with tenor t, then bid spread scaled by years=t
+        F_mid_0t = forward_dc_per_fc_constant_rate(S0, r_d, r_f, 0, t)
+        bid_0t, _ = bid_ask_from_mid_tenor_scaled(F_mid_0t, spread_bps_per_year, years=t)
+        hedged_fc   = h * rev_fc
+        unhedged_fc = (1.0 - h) * rev_fc
+        e_all0 = hedged_fc * bid_0t + unhedged_fc * E_S_t
+        e_cf_all0[t-1] = e_all0
+
+        # Rolling 1-Year:
+        #  At t-1, forward mid = S_{t-1} * ratio_1y. Bid = mid * (1 - s1/2).
+        #  E[bid_prev_t] = bid_factor_1y * ratio_1y * E[S_{t-1}]
+        E_S_tm1 = expected_S_t_population(S0, infl_diff, t-1)
+        E_bid_prev_t = bid_factor_1y * ratio_1y * E_S_tm1
+        e_roll = hedged_fc * E_bid_prev_t + unhedged_fc * E_S_t
+        e_cf_roll[t-1] = e_roll
+
+    return {
+        "unhedged": e_cf_unhedged,
+        "all_at_0": e_cf_all0,
+        "roll_1y": e_cf_roll,
+    }
 
 # ------------------------------
 # Streamlit UI (basic)
@@ -262,6 +333,28 @@ if simulate_btn:
     plt.plot(tgrid, cum_roll, marker="o", label="Rolling 1-Year")
     plt.xlabel("Year t"); plt.ylabel("Cumulative DC revenue (mean)")
     plt.title("Cumulative Hedge-Converted Cash Flows (Mean)")
+    plt.legend()
+    st.pyplot(fig)
+
+    # ------------------------------
+    # NEW: Population expected DC cash flow per year (no simulation)
+    # ------------------------------
+    st.markdown("#### Population Expected DC Cash Flow per Year (No Simulation)")
+    e_cf = expected_dc_revenue_paths_population(
+        S0=S0,
+        infl_diff=infl_diff,
+        r_d=r_d,
+        r_f=r_f,
+        spread_bps_per_year=spread_bps_per_year,
+        revenue_fc=revenue_fc,
+        h=h,
+    )
+    fig = plt.figure()
+    plt.plot(tgrid, np.cumsum(e_cf["unhedged"]), marker="o", label="Unhedged (E[CF])")
+    plt.plot(tgrid, np.cumsum(e_cf["all_at_0"]), marker="o", label="Hedge-all-at-0 (E[CF])")
+    plt.plot(tgrid, np.cumsum(e_cf["roll_1y"]), marker="o", label="Rolling 1-Year (E[CF])")
+    plt.xlabel("Year t"); plt.ylabel("Cumulative expected DC cash flow")
+    plt.title("Cumulative Expected Cash Flow — Population (Unhedged vs Hedged)")
     plt.legend()
     st.pyplot(fig)
 
