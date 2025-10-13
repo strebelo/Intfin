@@ -211,10 +211,10 @@ t2.write("n ≤ 5000 required" if np.isnan(sh_stat) else f"stat = {sh_stat:.3f},
 # -------------------------------
 # Distribution Plot (with toggles)
 # -------------------------------
-st.subheader("Distribution: Histogram with optional overlays")
+st.subheader("Distribution of changes in the spot exchange rate")
 ocol1, ocol2, ocol3 = st.columns(3)
-show_normal = ocol1.checkbox("Show Normal distribution overlay", True)
-show_kde = ocol2.checkbox("Show Kernel Density Estimation (CV Gaussian) overlay", True)
+show_normal = ocol1.checkbox("Show Normal distribution", True)
+show_kde = ocol2.checkbox("Show Kernel Density Estimation (CV Gaussian)", True)
 show_ci = ocol3.checkbox("Show 95% Normal interval (μ ± 1.96σ)", True)
 
 pad_stds = 1.0
@@ -374,32 +374,32 @@ else:
 # -------------------------------
 # Diagnostics (temporary; safe to delete/comment out)
 # -------------------------------
-with st.expander("Diagnostics (temporary; safe to delete)"):
-    total_area = float(np.trapz(pdf_kde_full, grid))
-    st.write(f"DEBUG — KDE total area over grid: **{total_area:.4f}**")
-    st.write(f"DEBUG — grid range: **[{grid.min():.6f}, {grid.max():.6f}]**")
-    st.write(f"DEBUG — μ = {mu:.6f}, σ = {sigma:.6f}, 95% bounds: "
-             f"[{(mu - 1.96*sigma):.6f}, {(mu + 1.96*sigma):.6f}]")
-    st.write(f"DEBUG — Tail (Normal): **{p_tail_norm:.4f}**")
-    st.write(f"DEBUG — Tail (KDE, trapezoid fixed): **{p_tail_kde:.4f}**")
-    st.write(f"DEBUG — Tail (Empirical): **{p_tail_emp:.4f}**")
+#with st.expander("Diagnostics (temporary; safe to delete)"):
+#    total_area = float(np.trapz(pdf_kde_full, grid))
+#    st.write(f"DEBUG — KDE total area over grid: **{total_area:.4f}**")
+#    st.write(f"DEBUG — grid range: **[{grid.min():.6f}, {grid.max():.6f}]**")
+#    st.write(f"DEBUG — μ = {mu:.6f}, σ = {sigma:.6f}, 95% bounds: "
+#             f"[{(mu - 1.96*sigma):.6f}, {(mu + 1.96*sigma):.6f}]")
+#    st.write(f"DEBUG — Tail (Normal): **{p_tail_norm:.4f}**")
+#    st.write(f"DEBUG — Tail (KDE, trapezoid fixed): **{p_tail_kde:.4f}**")
+#    st.write(f"DEBUG — Tail (Empirical): **{p_tail_emp:.4f}**")
 
-    try:
-        z_samp = kde_cv.sample(100_000, random_state=0)
-        x_samp = mu_kde + sigma_kde * z_samp.ravel()
-        p_tail_mc = float(np.mean(np.abs(x_samp - mu) > 1.96 * sigma))
-        st.write(f"DEBUG — Tail (KDE Monte Carlo ~100k): **{p_tail_mc:.4f}**")
-    except Exception as e:
-        st.write(f"DEBUG — KDE Monte Carlo sampling failed: {e}")
+#    try:
+#        z_samp = kde_cv.sample(100_000, random_state=0)
+#        x_samp = mu_kde + sigma_kde * z_samp.ravel()
+#        p_tail_mc = float(np.mean(np.abs(x_samp - mu) > 1.96 * sigma))
+#        st.write(f"DEBUG — Tail (KDE Monte Carlo ~100k): **{p_tail_mc:.4f}**")
+#    except Exception as e:
+#        st.write(f"DEBUG — KDE Monte Carlo sampling failed: {e}")
 
-    if st.checkbox("Run bandwidth sensitivity check (z-scale)", value=False):
-        bws = [0.20, 0.30, 0.40, 0.60, 0.80, 1.00, 1.20]
-        rows = []
-        z = ((x - mu) / sigma).reshape(-1, 1)
-        for bw in bws:
-            kde_tmp = KernelDensity(kernel="gaussian", bandwidth=bw).fit(z)
-            pdf_tmp = evaluate_kde_pdf_on_grid(kde_tmp, grid, mu, sigma)
-            tail_tmp = tail_prob_from_pdf(grid, pdf_tmp, mu, sigma, 1.96)
-            area_tmp = float(np.trapz(pdf_tmp, grid))
-            rows.append({"bandwidth_z": bw, "kde_tail": tail_tmp, "total_area": area_tmp})
-        st.dataframe(pd.DataFrame(rows))
+#    if st.checkbox("Run bandwidth sensitivity check (z-scale)", value=False):
+#        bws = [0.20, 0.30, 0.40, 0.60, 0.80, 1.00, 1.20]
+#        rows = []
+#        z = ((x - mu) / sigma).reshape(-1, 1)
+#        for bw in bws:
+#            kde_tmp = KernelDensity(kernel="gaussian", bandwidth=bw).fit(z)
+#            pdf_tmp = evaluate_kde_pdf_on_grid(kde_tmp, grid, mu, sigma)
+#            tail_tmp = tail_prob_from_pdf(grid, pdf_tmp, mu, sigma, 1.96)
+#            area_tmp = float(np.trapz(pdf_tmp, grid))
+#            rows.append({"bandwidth_z": bw, "kde_tail": tail_tmp, "total_area": area_tmp})
+#        st.dataframe(pd.DataFrame(rows))
