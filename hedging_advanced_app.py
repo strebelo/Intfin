@@ -7,7 +7,7 @@
 # - Bid-ask spread scales per year of tenor
 # - Overlayed PV-profit distributions (Hedge-all-at-0 vs Rolling 1-Year)
 # - Cumulative hedge-converted cash flows line chart (both strategies)
-# - σ–mean (frontier) plot with RED DOT(S) for current variable h_t policy
+# - σ–mean (frontier) plot with colored dots (same size as others) for current variable h_t
 # ==========================
 
 import numpy as np
@@ -36,6 +36,7 @@ def forward_dc_per_fc_constant_rate(S_t_dc_fc, r_d, r_f, t, m):
     return S_t_dc_fc * (num / den)
 
 def bid_ask_from_mid_tenor_scaled(mid, spread_bps_per_year, years):
+    # total spread (in decimal) = (bps_per_year * years)/10000
     s_total = max(0.0, float(spread_bps_per_year)) * float(years) / 10000.0
     bid = mid * (1.0 - s_total / 2.0)
     ask = mid * (1.0 + s_total / 2.0)
@@ -78,7 +79,7 @@ def results_variable_h(
             ht = h_vec[t-1]
             F_mid_0t = forward_dc_per_fc_constant_rate(S0, r_d, r_f, 0, t)
             bid_0t, _ = bid_ask_from_mid_tenor_scaled(F_mid_0t, spread_bps_per_year, years=t)
-            hedged_fc = ht * revenue_fc[t-1]
+            hedged_fc   = ht * revenue_fc[t-1]
             unhedged_fc = (1.0 - ht) * revenue_fc[t-1]
             spot_t = np.maximum(S_paths[:, t], 1e-12)
             dc_rev_t[:, t-1] = hedged_fc * bid_0t + unhedged_fc * spot_t
@@ -87,7 +88,7 @@ def results_variable_h(
         ratio = (1.0 + float(r_d)) / max(1e-12, (1.0 + float(r_f)))
         for t in range(1, T+1):
             ht = h_vec[t-1]
-            hedged_fc = ht * revenue_fc[t-1]
+            hedged_fc   = ht * revenue_fc[t-1]
             unhedged_fc = (1.0 - ht) * revenue_fc[t-1]
             S_prev = S_paths[:, t-1]
             F_mid_prev_t = S_prev * ratio
@@ -262,7 +263,7 @@ if simulate_btn:
     plt.legend()
     st.pyplot(fig)
 
-# H-sweep frontier + RED DOT(S) for current variable h_t policy
+# H-sweep frontier + colored dots (same size as others) for current variable h_t policy
 if hsweep_btn:
     S_paths = run_paths()
 
@@ -271,28 +272,49 @@ if hsweep_btn:
     rows_all0, rows_roll = [], []
     for hv in hs:
         hv_vec = np.full(T, hv, dtype=float)
-        rA = results_variable_h(S_paths, S0, DF_d, r_d, r_f, costs_dc, revenue_fc, spread_bps_per_year, h_vec=hv_vec, strategy="all_at_t0")
-        rB = results_variable_h(S_paths, S0, DF_d, r_d, r_f, costs_dc, revenue_fc, spread_bps_per_year, h_vec=hv_vec, strategy="roll_one_year")
+        rA = results_variable_h(
+            S_paths, S0, DF_d, r_d, r_f,
+            costs_dc, revenue_fc, spread_bps_per_year,
+            h_vec=hv_vec, strategy="all_at_t0"
+        )
+        rB = results_variable_h(
+            S_paths, S0, DF_d, r_d, r_f,
+            costs_dc, revenue_fc, spread_bps_per_year,
+            h_vec=hv_vec, strategy="roll_one_year"
+        )
         rows_all0.append({"h": hv, "mean": rA["avg_pv_profit"], "std": rA["std_pv_profit"]})
         rows_roll.append({"h": hv, "mean": rB["avg_pv_profit"], "std": rB["std_pv_profit"]})
-    fa = pd.DataFrame(rows_all0); fb = pd.DataFrame(rows_roll)
+
+    fa = pd.DataFrame(rows_all0)
+    fb = pd.DataFrame(rows_roll)
 
     # Compute the CURRENT variable h_t policy point(s)
-    curr_all0 = results_variable_h(S_paths, S0, DF_d, r_d, r_f, costs_dc, revenue_fc, spread_bps_per_year, h_vec=h_vec, strategy="all_at_t0")
-    curr_roll = results_variable_h(S_paths, S0, DF_d, r_d, r_f, costs_dc, revenue_fc, spread_bps_per_year, h_vec=h_vec, strategy="roll_one_year")
+    curr_all0 = results_variable_h(
+        S_paths, S0, DF_d, r_d, r_f, costs_dc, revenue_fc,
+        spread_bps_per_year, h_vec=h_vec, strategy="all_at_t0"
+    )
+    curr_roll = results_variable_h(
+        S_paths, S0, DF_d, r_d, r_f, costs_dc, revenue_fc,
+        spread_bps_per_year, h_vec=h_vec, strategy="roll_one_year"
+    )
 
     fig = plt.figure()
-    # Frontiers
+    # Frontiers (constant-h sweep)
     plt.scatter(fa["std"], fa["mean"], label="Hedge-all-at-0")
     for _, r in fa.iterrows():
-        plt.annotate(f"{int(r['h']*100)}%", (r["std"], r["mean"]), textcoords="offset points", xytext=(5,3), fontsize=8)
+        plt.annotate(f"{int(r['h']*100)}%", (r["std"], r["mean"]),
+                     textcoords="offset points", xytext=(5,3), fontsize=8)
+
     plt.scatter(fb["std"], fb["mean"], label="Rolling 1-Year")
     for _, r in fb.iterrows():
-        plt.annotate(f"{int(r['h']*100)}%", (r["std"], r["mean"]), textcoords="offset points", xytext=(5,3), fontsize=8)
+        plt.annotate(f"{int(r['h']*100)}%", (r["std"], r["mean"]),
+                     textcoords="offset points", xytext=(5,3), fontsize=8)
 
-    # RED DOT(S) for current variable h_t policy
-    plt.scatter([curr_all0["std_pv_profit"]], [curr_all0["avg_pv_profit"]], s=90, c="red", marker="o", label="Your $h_t$ (all-at-0)")
-    plt.scatter([curr_roll["std_pv_profit"]], [curr_roll["avg_pv_profit"]], s=90, c="red", marker="o", label="Your $h_t$ (rolling)")
+    # Variable h_t policy dots — different colors, same size as the other points (no 's' set)
+    plt.scatter(curr_all0["std_pv_profit"], curr_all0["avg_pv_profit"],
+                color="tab:green", marker="o", label="Your $h_t$ (all-at-0)")
+    plt.scatter(curr_roll["std_pv_profit"], curr_roll["avg_pv_profit"],
+                color="tab:red", marker="o", label="Your $h_t$ (rolling)")
 
     plt.xlabel(r"$\sigma(\text{PV Profit})$")
     plt.ylabel(r"$\mathbb{E}[\text{PV Profit}]$")
