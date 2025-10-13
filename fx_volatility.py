@@ -1,36 +1,38 @@
-# -------------------------------
-# Forecast: Spot path & 95% Normal CI by month
-# -------------------------------
-st.subheader("Forecast: 95% Normal-confidence interval for the spot by month")
+def render_forecast_section(mu, sigma, panel, price_col):
+    # -------------------------------
+    # Forecast: Spot path & 95% Normal CI by month
+    # -------------------------------
+    st.subheader("Forecast: 95% Normal-confidence interval for the spot by month")
 
-# Inputs
-default_spot = float(panel[price_col].iloc[-1]) if len(panel) else 1.0
-spot_now = st.number_input("Current spot (S₀)", min_value=0.0, value=round(default_spot, 6), format="%.6f")
-horizon_m = st.number_input("Horizon (months)", min_value=1, max_value=240, value=12, step=1)
+    # Inputs
+    default_spot = float(panel[price_col].iloc[-1]) if len(panel) else 1.0
+    spot_now = st.number_input("Current spot (S₀)", min_value=0.0, value=round(default_spot, 6), format="%.6f")
+    horizon_m = st.number_input("Horizon (months)", min_value=1, max_value=240, value=12, step=1)
 
-# NEW: choose drift source
-drift_choice = st.radio(
-    "Drift used in the CI",
-    options=["Historical average (μ)", "User-specified annual drift"],
-    index=0,
-    horizontal=True,
-    help="Drift is the annual log change. If you choose a custom drift, enter it as a decimal (e.g., 0.02 ≈ 2% per year)."
-)
-
-if drift_choice == "User-specified annual drift":
-    user_mu_annual = st.number_input(
-        "Annual log drift μ (decimal, e.g., 0.02 ≈ 2%)",
-        value=float(mu),
-        format="%.6f"
+    # NEW: choose drift source
+    drift_choice = st.radio(
+        "Drift used in the CI",
+        options=["Historical average (μ)", "User-specified annual drift"],
+        index=0,
+        horizontal=True,
+        help="Drift is the annual log change. If you choose a custom drift, enter it as a decimal (e.g., 0.02 ≈ 2% per year)."
     )
-    mu_used = float(user_mu_annual)
-else:
-    mu_used = float(mu)
 
-# Compute only if valid
-if spot_now <= 0.0:
-    st.warning("Please enter a positive current spot to compute the forecast.")
-else:
+    if drift_choice == "User-specified annual drift":
+        user_mu_annual = st.number_input(
+            "Annual log drift μ (decimal, e.g., 0.02 ≈ 2%)",
+            value=float(mu),
+            format="%.6f"
+        )
+        mu_used = float(user_mu_annual)
+    else:
+        mu_used = float(mu)
+
+    # Compute only if valid
+    if spot_now <= 0.0:
+        st.warning("Please enter a positive current spot to compute the forecast.")
+        return
+
     # Annual -> monthly scaling under Normal i.i.d. log changes assumption
     mu_month = mu_used / 12.0                      # CHANGED: use selected drift
     sigma_month = sigma / np.sqrt(12.0)
@@ -89,7 +91,7 @@ else:
     ax2.plot(x_axis, point, linewidth=2, label="Spot point forecast (Normal)")
     ax2.fill_between(x_axis, lower, upper, alpha=0.2, label="95% CI (Normal)")
 
-    # Robust ticks (≈12 ticks max) — avoids slicing bugs
+    # Robust ticks (≈12 ticks max)
     step = max(1, len(x_axis) // 12)
     tick_idx = np.arange(0, len(x_axis), step)
 
@@ -107,21 +109,20 @@ else:
     ax2.grid(True, linestyle=":", linewidth=0.8)
 
     # >>> Extra space between graph and x-axis labels <<<
-    ax2.tick_params(axis="x", pad=10)   # more gap from axis line to tick labels
-    ax2.xaxis.labelpad = 14            # more gap from tick labels to axis label
-    ax2.margins(y=0.10)                # add vertical breathing room inside axes
+    ax2.tick_params(axis="x", pad=10)
+    ax2.xaxis.labelpad = 14
+    ax2.margins(y=0.10)
 
-    # Legend BELOW the chart, pushed well away from x-labels
-    leg = ax2.legend(
+    # Legend below the chart
+    ax2.legend(
         loc="upper center",
-        bbox_to_anchor=(0.5, -0.28),  # further down
+        bbox_to_anchor=(0.5, -0.28),
         ncol=2,
         frameon=False,
         fontsize="small"
     )
 
-    # Tight layout, then add generous bottom margin for labels + legend
     fig2.tight_layout()
-    fig2.subplots_adjust(bottom=0.46)  # increase if you still see crowding
+    fig2.subplots_adjust(bottom=0.46)
 
     st.pyplot(fig2)
