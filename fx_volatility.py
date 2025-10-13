@@ -138,9 +138,9 @@ def tail_prob_normal(k: float = 1.96) -> float:
 st.title("Distribution of changes in exchange rates")
 
 st.markdown(
-    """
+    r"""
 Upload **monthly** spot exchange rates (CSV or Excel).  
-We compute the **annual log change** \\(\\Delta \\ell_t = \\log S_t - \\log S_{t-12}\\), then compare a Normal model with a **Kernel Density Estimation (Gaussian kernel, bandwidth via cross-validation)** and report tail risks.
+We compute the annual log change $\Delta \ell_t = \log S_t - \log S_{t-12}$, then compare a Normal model with a Kernel Density Estimation (Gaussian kernel, bandwidth via cross-validation) and report tail risks.
 """
 )
 
