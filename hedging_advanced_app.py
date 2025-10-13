@@ -1,5 +1,5 @@
 # ==========================
-# hedging_advanced_app.py
+# advanced_app.py
 # ==========================
 # Streamlit app — Variable h_t (advanced)
 # - User sets per-year h_t
@@ -7,6 +7,7 @@
 # - Bid-ask spread scales per year of tenor
 # - Overlayed PV-profit distributions (Hedge-all-at-0 vs Rolling 1-Year)
 # - Cumulative hedge-converted cash flows line chart (both strategies)
+# - σ–mean (frontier) plot with RED DOT(S) for current variable h_t policy
 # ==========================
 
 import numpy as np
@@ -190,7 +191,7 @@ col1, col2 = st.columns([1,1])
 with col1:
     simulate_btn = st.button("Run Simulation")
 with col2:
-    hsweep_btn = st.button("Plot σ vs Mean (H-sweep, constant h proxy)")
+    hsweep_btn = st.button("Plot σ vs Mean (H-sweep + current variable h_t)")
 
 def run_paths():
     return simulate_spot_paths_dc_fc_with_infl_drift(
@@ -261,9 +262,11 @@ if simulate_btn:
     plt.legend()
     st.pyplot(fig)
 
-# A simple “proxy” H-sweep for advanced: sweep a constant h and apply it uniformly as h_t
+# H-sweep frontier + RED DOT(S) for current variable h_t policy
 if hsweep_btn:
     S_paths = run_paths()
+
+    # Sweep constant h (proxy) for both strategies
     hs = np.linspace(0.0, 1.0, 11)
     rows_all0, rows_roll = [], []
     for hv in hs:
@@ -273,15 +276,26 @@ if hsweep_btn:
         rows_all0.append({"h": hv, "mean": rA["avg_pv_profit"], "std": rA["std_pv_profit"]})
         rows_roll.append({"h": hv, "mean": rB["avg_pv_profit"], "std": rB["std_pv_profit"]})
     fa = pd.DataFrame(rows_all0); fb = pd.DataFrame(rows_roll)
+
+    # Compute the CURRENT variable h_t policy point(s)
+    curr_all0 = results_variable_h(S_paths, S0, DF_d, r_d, r_f, costs_dc, revenue_fc, spread_bps_per_year, h_vec=h_vec, strategy="all_at_t0")
+    curr_roll = results_variable_h(S_paths, S0, DF_d, r_d, r_f, costs_dc, revenue_fc, spread_bps_per_year, h_vec=h_vec, strategy="roll_one_year")
+
     fig = plt.figure()
+    # Frontiers
     plt.scatter(fa["std"], fa["mean"], label="Hedge-all-at-0")
     for _, r in fa.iterrows():
         plt.annotate(f"{int(r['h']*100)}%", (r["std"], r["mean"]), textcoords="offset points", xytext=(5,3), fontsize=8)
     plt.scatter(fb["std"], fb["mean"], label="Rolling 1-Year")
     for _, r in fb.iterrows():
         plt.annotate(f"{int(r['h']*100)}%", (r["std"], r["mean"]), textcoords="offset points", xytext=(5,3), fontsize=8)
+
+    # RED DOT(S) for current variable h_t policy
+    plt.scatter([curr_all0["std_pv_profit"]], [curr_all0["avg_pv_profit"]], s=90, c="red", marker="o", label="Your $h_t$ (all-at-0)")
+    plt.scatter([curr_roll["std_pv_profit"]], [curr_roll["avg_pv_profit"]], s=90, c="red", marker="o", label="Your $h_t$ (rolling)")
+
     plt.xlabel(r"$\sigma(\text{PV Profit})$")
     plt.ylabel(r"$\mathbb{E}[\text{PV Profit}]$")
-    plt.title("Frontier over $h \in [0,1]$ (both strategies)")
+    plt.title("Frontier over $h \in [0,1]$ + Your variable $h_t$ policy")
     plt.legend()
     st.pyplot(fig)
