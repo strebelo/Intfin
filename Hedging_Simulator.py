@@ -2,10 +2,12 @@
 # Currency Risk Hedging Simulator (Streamlit) — DC/FC Quoting
 # Constant or Per-Period Hedge Fractions
 # + User-selectable time horizon T
-# + σ vs mean (H-sweep) plot (constant-h only)
+# + σ vs mean (H-sweep) plot (constant-h only) [combined figure]
 # + Inflation differential-driven drift in spot simulation
 # + Unified "Inputs" section (no separate "Simulation Controls")
-# + New: per-year hedge schedule UI with presets
+# + Per-year hedge schedule UI with presets
+# + LaTeX-rendered math for all formulas & symbols (via st.latex / markdown)
+# + NEW: final combined chart comparing Hedge-all-at-0 vs Rolling 1-Year in one plot
 # ------------------------------
 
 import numpy as np
@@ -52,6 +54,7 @@ def simulate_spot_paths_dc_fc_with_infl_drift(S0_dc_fc, sigma, infl_diff, n_sims
     paths = np.empty((n_sims, T+1), dtype=float)
     paths[:, 0] = float(S0_dc_fc)
 
+    # mu = ln(1 + pi_Delta) - 0.5 * sigma^2
     mu_adj = np.log1p(infl_diff) - 0.5 * (sigma ** 2)
 
     for t in range(1, T+1):
@@ -61,7 +64,7 @@ def simulate_spot_paths_dc_fc_with_infl_drift(S0_dc_fc, sigma, infl_diff, n_sims
 
     return paths
 
-# ---- Existing constant-h engine (unchanged) ----
+# ---- Existing constant-h engine ----
 def compute_strategy_results_constant_hedge(
     S_paths_dc_fc,
     S0_dc_fc,
@@ -147,7 +150,7 @@ def compute_strategy_results_constant_hedge(
         "frac_neg_profit": _frac_negative(pv_profit_per_sim),
     }
 
-# ---- New: per-period hedge schedule engine ----
+# ---- Per-period hedge schedule engine ----
 def compute_strategy_results_variable_hedge(
     S_paths_dc_fc,
     S0_dc_fc,
@@ -245,34 +248,55 @@ def compute_strategy_results_variable_hedge(
 st.set_page_config(page_title="Currency Risk Hedging Simulator", layout="wide")
 st.title("💱 Currency Risk Hedging Simulator")
 
-# Unified Inputs (sidebar)
-st.sidebar.header("Inputs")
+# Math summary (LaTeX)
+with st.expander("Show math / notation"):
+    st.latex(r"S_t \ \text{(DC/FC)}")
+    st.latex(r"F_{t\to m} \;=\; S_t \times \frac{(1+r_d)^{\,m-t}}{(1+r_f)^{\,m-t}}")
+    st.latex(r"\mu \;=\; \ln(1+\pi_{\Delta}) \;-\; \tfrac{1}{2}\sigma^2 \quad\Rightarrow\quad \mathbb{E}\!\left[\frac{S_t}{S_{t-1}}\right] = 1+\pi_{\Delta}")
+    st.latex(r"h_t \in [0,1], \quad \text{hedged FC flow at } t = h_t \times \text{revenue}_t")
+    st.latex(r"\text{PV}(\text{profit}) \;=\; \sum_{t=1}^{T} \Big( \text{revenue}_t^{\text{(DC)}} - \text{cost}_t^{\text{(DC)}} \Big)\times \text{DF}_d(t)")
 
-# Core market & model inputs
-S0 = st.sidebar.number_input("Current spot S₀ (Domestic currency/Foreign currency)", min_value=1e-9, value=1.05, step=0.01, format="%.6f")
+# Unified Inputs (sidebar)
+st.sidebar.header("Inputs (symbols rendered below)")
+
+# Core market & model inputs (widget labels avoid LaTeX; we render formulas separately)
+S0 = st.sidebar.number_input("Current spot S0 (DC/FC)", min_value=1e-9, value=1.05, step=0.01, format="%.6f")
 T = int(st.sidebar.number_input("Time horizon T (years)", min_value=1, max_value=50, value=3, step=1))
-sigma_input = st.sidebar.number_input("Annual volatility σ (% per year)", min_value=0.0, value=10.0, step=0.5)
+sigma_input = st.sidebar.number_input("Annual volatility sigma (%/yr)", min_value=0.0, value=10.0, step=0.5)
 sigma = sigma_input / 100.0
 
 # Inflation differential input (DOM − FOR)
-infl_diff_pct = st.sidebar.number_input("Inflation differential (Domestic − Foreign, % per year)", value=0.0, step=0.25, format="%.4f")
+infl_diff_pct = st.sidebar.number_input("Inflation diff (DOM − FOR, %/yr)", value=0.0, step=0.25, format="%.4f")
 infl_diff = infl_diff_pct / 100.0
 
 # Rates, hedge, trading frictions
-r_d_pct = st.sidebar.number_input("Domestic interest rate r_d (% per year)", value=3.0, step=0.25, format="%.4f")
-r_f_pct = st.sidebar.number_input("Foreign interest rate r_f  (% per year)", value=5.0, step=0.25, format="%.4f")
-spread_bps = st.sidebar.number_input("Forward bid-ask spread (basis points)", min_value=0.0, value=25.0, step=1.0)
+r_d_pct = st.sidebar.number_input("Domestic rate rd (%/yr)", value=3.0, step=0.25, format="%.4f")
+r_f_pct = st.sidebar.number_input("Foreign rate rf (%/yr)", value=5.0, step=0.25, format="%.4f")
+spread_bps = st.sidebar.number_input("Forward bid-ask spread (bps)", min_value=0.0, value=25.0, step=1.0)
+
+# Render the key math near inputs
+st.markdown(
+    r"""
+**Key:**
+- Spot quoted DC/FC: $S_0$
+- Volatility: $\sigma$
+- Rates: $r_d, r_f$
+- Inflation differential (DOM−FOR): $\pi_\Delta$
+- Hedge fraction (per year): $h_t$
+- Forward: $F_{t\to m} = S_t \frac{(1+r_d)^{m-t}}{(1+r_f)^{m-t}}$
+"""
+)
 
 # Hedge mode selector
 st.sidebar.markdown("---")
 hedge_mode = st.sidebar.radio(
     "Hedge mode",
-    ["Constant fraction h", "Per-year schedule hₜ"],
+    ["Constant fraction h", "Per-year schedule h_t"],
     index=0,
     help="Choose a single hedge fraction for all years, or specify a different fraction per year."
 )
 
-# Constant-h control (kept for H-sweep compatibility)
+# Constant-h control
 hedge_frac_pct = st.sidebar.number_input(
     "Hedge fraction of revenue h (% of each year, for constant-h mode)",
     min_value=0.0, max_value=100.0, value=50.0, step=1.0, format="%.1f"
@@ -297,20 +321,17 @@ if (1.0 + infl_diff) <= 0.0:
 
 # Discount factors (t=0..T)
 DF_d_0 = make_discount_factors_constant(r_d, T=T)
-DF_f_0 = make_discount_factors_constant(r_f, T=T)  # kept for completeness/extensibility
+DF_f_0 = make_discount_factors_constant(r_f, T=T)  # for completeness/extensibility
 
 # ------------------------------
-# Diagnostics (quick sanity check on CIP with DC/FC quoting)
+# Diagnostics (CIP forward points; LaTeX-rendered)
 # ------------------------------
-with st.expander("Diagnostics: Forward Points (Domestic currency/Foreign currency)"):
+with st.expander("Diagnostics: Forward points (DC/FC)"):
     try:
         F_01_mid = forward_dc_per_fc_constant_rate(S0, r_d, r_f, 0, 1)
         pts = F_01_mid - S0
-        st.write(
-            f"**S₀ (DC/FC):** {S0:.6f}  |  **F₀→1 (mid, DC/FC):** {F_01_mid:.6f}  "
-            f"|  **Forward points (F−S):** {pts:.6f}  "
-            f"|  Expect **F<S** when r_f>r_d."
-        )
+        st.latex(rf"S_0 = {S0:.6f} \quad;\quad F_{{0\to 1}} = {F_01_mid:.6f} \quad;\quad (F - S) = {pts:.6f}")
+        st.markdown("Expectation: if $r_f > r_d$, then typically $F < S$.")
     except Exception as e:
         st.write(f"Diagnostics error: {e}")
 
@@ -337,19 +358,19 @@ costs_dc   = cash_df["Cost (DOM)"].to_numpy(dtype=float)
 revenue_fc = cash_df["Revenue (FOR)"].to_numpy(dtype=float)
 
 # ------------------------------
-# Hedge Schedule UI (new)
+# Hedge Schedule UI
 # ------------------------------
 per_year_df = None
 hedge_vec = None
 
-if hedge_mode == "Per-year schedule hₜ":
-    st.subheader("Per-Year Hedge Schedule hₜ")
-    st.caption("Set **hₜ (% of revenue)** for each year. Quick presets can prefill the schedule; you can then tweak values directly.")
+if hedge_mode == "Per-year schedule h_t":
+    st.subheader("Per-Year Hedge Schedule $h_t$")
+    st.caption("Set $h_t$ (% of revenue) for each year. Presets can prefill the schedule; fine-tune afterwards.")
 
-    # Build default (fill with current constant-h)
+    # default: fill with current constant-h
     default_ht = [hedge_frac_pct]*T
 
-    # Preset selector + apply
+    # Presets
     presets = {
         "Flat (use constant h)": lambda T, h: [h]*T,
         "Front-loaded (100%, 75%, 50%, …)": lambda T, h: [max(0, 100 - 25*(t-1)) for t in range(1, T+1)],
@@ -361,13 +382,10 @@ if hedge_mode == "Per-year schedule hₜ":
     }
     sel = st.selectbox("Preset", list(presets.keys()), index=0)
     apply_preset = st.button("Apply preset")
-
     if apply_preset:
         default_ht = presets[sel](T, hedge_frac_pct)
 
-    per_year_df = pd.DataFrame({
-        "Hedge hₜ (%)": default_ht,
-    })
+    per_year_df = pd.DataFrame({"Hedge h_t (%)": default_ht})
     per_year_df.index = pd.Index(range(1, T+1), name=f"Year (1–{T})")
 
     per_year_df = st.data_editor(
@@ -375,14 +393,14 @@ if hedge_mode == "Per-year schedule hₜ":
         num_rows="fixed",
         use_container_width=True,
         column_config={
-            "Hedge hₜ (%)": st.column_config.NumberColumn(
-                "Hedge hₜ (%)",
+            "Hedge h_t (%)": st.column_config.NumberColumn(
+                "Hedge h_t (%)",
                 help="Fraction of that year's revenue hedged via forwards.",
                 min_value=0.0, max_value=100.0, step=1.0, format="%.1f",
             ),
         },
     )
-    hedge_vec = (per_year_df["Hedge hₜ (%)"].to_numpy(dtype=float) / 100.0)
+    hedge_vec = (per_year_df["Hedge h_t (%)"].to_numpy(dtype=float) / 100.0)
 
 # ------------------------------
 # Tabs
@@ -391,21 +409,21 @@ tabs = st.tabs(["Compare Hedging Strategies"])
 
 with tabs[0]:
     st.markdown("### Strategy Comparison (DC/FC)")
-    st.caption(
-        r"""
-- **Spot path**: lognormal with drift tied to inflation differential $\pi_{\Delta} = (\text{Domestic} - \text{Foreign})$.  
-  Uses $\mu = \ln(1+\pi_{\Delta}) - \tfrac{1}{2}\sigma^2$ so that $\mathbb{E}\!\left[\tfrac{S_t}{S_{t-1}}\right] = 1 + \pi_{\Delta}$ (positive $\pi_{\Delta} \Rightarrow$ Domestic depreciation).  
 
-- **Unhedged**: 100% converts at spot $S_t$ (DC/FC).  
+    st.markdown(
+        r"""
+- **Spot path**: lognormal with drift tied to inflation differential $\pi_{\Delta} = (\text{DOM} - \text{FOR})$, using  
+  $\mu = \ln(1+\pi_{\Delta}) - \tfrac{1}{2}\sigma^2$ so that $\mathbb{E}\!\left[\tfrac{S_t}{S_{t-1}}\right] = 1 + \pi_{\Delta}$.  
+
+- **Unhedged**: $100\%$ converts at spot $S_t$.  
 
 - **Hedge-all-at-0**: for each year $t$, hedge $h_t \times \text{revenue}_t$ at $t=0$ using  
-  $F_{0\rightarrow t} = S_0 \times \frac{(1+r_d)^t}{(1+r_f)^t}$; the remaining $(1-h_t)$ converts at spot $S_t$.  
+  $F_{0\rightarrow t} = S_0 \times \dfrac{(1+r_d)^t}{(1+r_f)^t}$; the remaining $(1-h_t)$ converts at $S_t$.  
 
-- **Rolling 1-Year Hedge**: each year $t-1$, hedge $h_t \times \text{revenue}_t$ for year $t$ using  
-  $F_{t-1\rightarrow t} = S_{t-1} \times \frac{1+r_d}{1+r_f}$; the remaining $(1-h_t)$ converts at spot $S_t$.
+- **Rolling 1-Year**: at year $t-1$, hedge $h_t \times \text{revenue}_t$ using  
+  $F_{t-1\rightarrow t} = S_{t-1} \times \dfrac{1+r_d}{1+r_f}$; the remaining $(1-h_t)$ converts at $S_t$.
 """
     )
-
 
     colA, colB = st.columns([1,1])
     with colA:
@@ -423,8 +441,8 @@ with tabs[0]:
             seed=seed
         )
 
-        if hedge_mode == "Per-year schedule hₜ":
-            # Variable hₜ path
+        if hedge_mode == "Per-year schedule h_t":
+            # Variable h_t path
             res_A = compute_strategy_results_variable_hedge(
                 S_paths_dc_fc=S_paths, S0_dc_fc=S0,
                 DF_d_0=DF_d_0, DF_f_0=DF_f_0,
@@ -485,7 +503,7 @@ with tabs[0]:
             )
             h_display = f"{hedge_frac*100:.1f}% (constant)"
 
-        # Summary
+        # Summary table
         summary = pd.DataFrame({
             "Strategy": ["Unhedged", "Hedge-all-at-0", "Rolling 1-Year Hedge"],
             "Hedge h": [h_display, h_display, h_display],
@@ -503,7 +521,7 @@ with tabs[0]:
 
         st.dataframe(fmt, use_container_width=True)
 
-        # Histograms
+        # Histograms (separate)
         st.markdown("#### PV Profit Distribution (in domestic currency)")
         for title, arr in [
             ("Unhedged: PV Profit (DOM)", res_U["pv_profit_per_sim"]),
@@ -519,7 +537,23 @@ with tabs[0]:
                 plt.title(title)
                 st.pyplot(fig)
 
-    # --- σ vs Mean plot over h-grid (constant-h only) ---
+        # --- NEW: Final combined chart comparing Hedge-all-at-0 vs Rolling 1-Year ---
+        st.markdown("#### Combined Comparison: Hedge-all-at-0 vs Rolling 1-Year (PV Profit)")
+        finite_A = res_A["pv_profit_per_sim"][np.isfinite(res_A["pv_profit_per_sim"])]
+        finite_B = res_B["pv_profit_per_sim"][np.isfinite(res_B["pv_profit_per_sim"])]
+        if finite_A.size and finite_B.size:
+            fig = plt.figure()
+            plt.hist(finite_A, bins=40, alpha=0.5, label="Hedge-all-at-0")
+            plt.hist(finite_B, bins=40, alpha=0.5, label="Rolling 1-Year")
+            plt.xlabel("PV Profit (DOM)")
+            plt.ylabel("Frequency")
+            plt.title("PV Profit: Overlayed Distributions")
+            plt.legend()
+            st.pyplot(fig)
+        else:
+            st.info("Not enough finite values to build the combined comparison plot.")
+
+    # --- σ vs Mean plot over h-grid (constant-h only) — COMBINED FIGURE ---
     if hsweep_btn:
         S_paths = simulate_spot_paths_dc_fc_with_infl_drift(
             S0_dc_fc=S0,
@@ -530,34 +564,47 @@ with tabs[0]:
             seed=seed
         )
         hs = np.linspace(0.0, 1.0, 11)  # 0, 0.1, ..., 1.0
-        strategies = [
-            ("Hedge-all-at-0", "all_at_t0"),
-            ("Rolling 1-Year Hedge", "roll_one_year"),
-        ]
 
-        for label, strat in strategies:
-            rows = []
-            for h in hs:
-                res = compute_strategy_results_constant_hedge(
-                    S_paths_dc_fc=S_paths, S0_dc_fc=S0,
-                    DF_d_0=DF_d_0, DF_f_0=DF_f_0,
-                    r_d=r_d, r_f=r_f,
-                    costs_dc=costs_dc, revenue_fc=revenue_fc,
-                    spread_bps=spread_bps,
-                    hedge_frac=h,
-                    strategy=strat,
-                )
-                rows.append({"h": h, "mean": res["avg_pv_profit"], "std": res["std_pv_profit"]})
+        rows_A, rows_B = [], []
+        for h in hs:
+            resA = compute_strategy_results_constant_hedge(
+                S_paths_dc_fc=S_paths, S0_dc_fc=S0,
+                DF_d_0=DF_d_0, DF_f_0=DF_f_0,
+                r_d=r_d, r_f=r_f,
+                costs_dc=costs_dc, revenue_fc=revenue_fc,
+                spread_bps=spread_bps,
+                hedge_frac=h,
+                strategy="all_at_t0",
+            )
+            rows_A.append({"h": h, "mean": resA["avg_pv_profit"], "std": resA["std_pv_profit"]})
 
-            frontier = pd.DataFrame(rows)
+            resB = compute_strategy_results_constant_hedge(
+                S_paths_dc_fc=S_paths, S0_dc_fc=S0,
+                DF_d_0=DF_d_0, DF_f_0=DF_f_0,
+                r_d=r_d, r_f=r_f,
+                costs_dc=costs_dc, revenue_fc=revenue_fc,
+                spread_bps=spread_bps,
+                hedge_frac=h,
+                strategy="roll_one_year",
+            )
+            rows_B.append({"h": h, "mean": resB["avg_pv_profit"], "std": resB["std_pv_profit"]})
 
-            fig = plt.figure()
-            plt.scatter(frontier["std"], frontier["mean"])
-            for _, r in frontier.iterrows():
-                plt.annotate(f"{int(r['h']*100)}%", (r["std"], r["mean"]), textcoords="offset points", xytext=(5,3))
-            plt.xlabel("σ(PV Profit)")
-            plt.ylabel("Mean PV Profit")
-            plt.title(f"{label}: Frontier (σ, mean) over h = 0…100%")
-            st.pyplot(fig)
+        frontier_A = pd.DataFrame(rows_A)
+        frontier_B = pd.DataFrame(rows_B)
+
+        fig = plt.figure()
+        plt.scatter(frontier_A["std"], frontier_A["mean"], label="Hedge-all-at-0")
+        for _, r in frontier_A.iterrows():
+            plt.annotate(f"{int(r['h']*100)}%", (r["std"], r["mean"]), textcoords="offset points", xytext=(5,3), fontsize=8)
+
+        plt.scatter(frontier_B["std"], frontier_B["mean"], label="Rolling 1-Year")
+        for _, r in frontier_B.iterrows():
+            plt.annotate(f"{int(r['h']*100)}%", (r["std"], r["mean"]), textcoords="offset points", xytext=(5,3), fontsize=8)
+
+        plt.xlabel(r"$\sigma(\text{PV Profit})$")
+        plt.ylabel(r"$\mathbb{E}[\text{PV Profit}]$")
+        plt.title("Frontier over $h \in [0,1]$ (both strategies)")
+        plt.legend()
+        st.pyplot(fig)
 
 # End of file
