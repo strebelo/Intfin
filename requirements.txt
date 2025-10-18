@@ -4,6 +4,7 @@ numpy
 quantecon
 statsmodels
 matplotlib
+plotly>=5.0
 openpyxl   # for .xlsx
 xlrd       # only if you’ll upload legacy .xls
 scikit-learn>=1.4
