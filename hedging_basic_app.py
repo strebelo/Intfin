@@ -227,7 +227,7 @@ with st.expander("Show math / notation"):
     st.latex(r"\text{PV(profit)} = \sum_{t=1}^T \left(\text{revenue}_t^{(DC)}-\text{cost}_t^{(DC)}\right)\cdot DF_d(t)")
     st.markdown(
         r"""
-#**Bid–ask spread per tenor**: if input is \(s_{\text{per-year}}\) (bps/yr), a \(k\)-year forward uses  
+# **Bid–ask spread per tenor**: if input is \(s_{\text{per-year}}\) (bps/yr), a \(k\)-year forward uses  
 #\( s_{\text{total}} = k \cdot s_{\text{per-year}} \) bps.
 #        """
     )
