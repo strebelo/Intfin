@@ -225,8 +225,7 @@ with st.expander("Show math / notation"):
     st.latex(r"\mu = \ln(1+\pi_{\Delta}) - \tfrac{1}{2}\sigma^2,\quad \mathbb{E}\!\left[\frac{S_t}{S_{t-1}}\right]=1+\pi_{\Delta}")
     st.latex(r"\text{h is the fraction of foreign currency revenue hedged}")
     st.latex(r"\text{PV(profit)} = \sum_{t=1}^T \left(\text{revenue}_t^{(DC)}-\text{cost}_t^{(DC)}\right)\cdot DF_d(t)")
-    st.markdown(
-    )
+  
 
 st.sidebar.header("Inputs")
 S0 = st.sidebar.number_input("Current spot S0 (DC/FC)", min_value=1e-9, value=1.05, step=0.01, format="%.6f")
