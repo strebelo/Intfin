@@ -218,23 +218,23 @@ def expected_dc_revenue_paths_population(
 # Streamlit UI (basic)
 # ------------------------------
 st.set_page_config(page_title="Currency Hedging — Basic (constant h_t)", layout="wide")
-st.title("💱 Currency Risk Hedging — Basic (constant $h_t$)")
+st.title("💱 Currency Risk Hedging Laboratory")
 
 with st.expander("Show math / notation"):
     st.latex(r"F_{t,m} = S_t \cdot \frac{(1+r_d)^{m-t}}{(1+r_f)^{m-t}}")
     st.latex(r"\mu = \ln(1+\pi_{\Delta}) - \tfrac{1}{2}\sigma^2,\quad \mathbb{E}\!\left[\frac{S_t}{S_{t-1}}\right]=1+\pi_{\Delta}")
     st.latex(r"\text{h is the fraction of foreign currency revenue hedged}")
-    st.latex(r"\text{PV(profit)} = \sum_{t=1}^T \left(\text{revenue}_t^{(DC)}-\text{cost}_t^{(DC)}\right)\cdot DF_d(t)")
+#   st.latex(r"\text{PV(profit)} = \sum_{t=1}^T \left(\text{revenue}_t^{(DC)}-\text{cost}_t^{(DC)}\right)\cdot DF_d(t)")
   
 
 st.sidebar.header("Inputs")
-S0 = st.sidebar.number_input("Current spot S0 (Dom,/For. currency)", min_value=1e-9, value=1.05, step=0.01, format="%.6f")
+S0 = st.sidebar.number_input("Current spot S0 (Dom./For. currency)", min_value=1e-9, value=1.17, step=0.01, format="%.6f")
 T = int(st.sidebar.number_input("Time horizon T (years)", min_value=1, max_value=50, value=3, step=1))
-sigma = st.sidebar.number_input("Volatility σ (%/yr)", min_value=0.0, value=10.0, step=0.5)/100.0
+sigma = st.sidebar.number_input("Annual FX volatility (%)", min_value=0.0, value=10.0, step=0.5)/100.0
 infl_diff = st.sidebar.number_input("Inflation diff (DOM−FOR, %/yr)", value=0.0, step=0.25, format="%.4f")/100.0
-r_d = st.sidebar.number_input("Domestic rate r_d (%/yr)", value=3.0, step=0.25, format="%.4f")/100.0
-r_f = st.sidebar.number_input("Foreign rate r_f (%/yr)", value=5.0, step=0.25, format="%.4f")/100.0
-spread_bps_per_year = st.sidebar.number_input("Forward bid–ask spread (bps **per year** of tenor)", min_value=0.0, value=5.0, step=0.5)
+r_d = st.sidebar.number_input("Domestic interest rate (%/yr)", value=4.0, step=0.25, format="%.4f")/100.0
+r_f = st.sidebar.number_input("Foreign interest rate (%/yr)", value=3.0, step=0.25, format="%.4f")/100.0
+spread_bps_per_year = st.sidebar.number_input("Forward bid–ask spread (bps **per year** of maturity)", min_value=0.0, value=5.0, step=0.5)
 
 st.sidebar.markdown("---")
 h_pct = st.sidebar.number_input("Hedge fraction h (% of each year)", min_value=0.0, max_value=100.0, value=50.0, step=1.0, format="%.1f")
