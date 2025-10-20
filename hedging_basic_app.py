@@ -226,8 +226,6 @@ with st.expander("Show math / notation"):
     st.latex(r"\text{h is the fraction of foreign currency revenue hedged}")
     st.latex(r"\text{PV(profit)} = \sum_{t=1}^T \left(\text{revenue}_t^{(DC)}-\text{cost}_t^{(DC)}\right)\cdot DF_d(t)")
     st.markdown(
-        r"""
-
     )
 
 st.sidebar.header("Inputs")
