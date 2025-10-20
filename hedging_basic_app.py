@@ -223,13 +223,13 @@ st.title("💱 Currency Risk Hedging — Basic (constant $h_t$)")
 with st.expander("Show math / notation"):
     st.latex(r"F_{t,m} = S_t \cdot \frac{(1+r_d)^{m-t}}{(1+r_f)^{m-t}}")
     st.latex(r"\mu = \ln(1+\pi_{\Delta}) - \tfrac{1}{2}\sigma^2,\quad \mathbb{E}\!\left[\frac{S_t}{S_{t-1}}\right]=1+\pi_{\Delta}")
-    st.latex(r"h \text{is the fraction of foreign currency revenue hedged}")
+    st.latex(r"\text{h is the fraction of foreign currency revenue hedged}")
     st.latex(r"\text{PV(profit)} = \sum_{t=1}^T \left(\text{revenue}_t^{(DC)}-\text{cost}_t^{(DC)}\right)\cdot DF_d(t)")
     st.markdown(
         r"""
-**Bid–ask spread per tenor**: if input is \(s_{\text{per-year}}\) (bps/yr), a \(k\)-year forward uses  
-\( s_{\text{total}} = k \cdot s_{\text{per-year}} \) bps.
-        """
+#**Bid–ask spread per tenor**: if input is \(s_{\text{per-year}}\) (bps/yr), a \(k\)-year forward uses  
+#\( s_{\text{total}} = k \cdot s_{\text{per-year}} \) bps.
+#        """
     )
 
 st.sidebar.header("Inputs")
