@@ -215,7 +215,7 @@ col1, col2 = st.columns([1,1])
 with col1:
     simulate_btn = st.button("Run Simulation")
 with col2:
-    hsweep_btn = st.button("Plot σ vs Mean (H-sweep, constant h)")
+    hsweep_btn = st.button("Plot Vol vs Mean, vary h")
 
 def run_paths():
     return simulate_spot_paths_dc_fc_with_infl_drift(S0, sigma, infl_diff, n_sims, T, seed)
