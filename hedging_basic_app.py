@@ -128,7 +128,7 @@ def results_constant_h(
     out = {
         "pv_revenue_per_sim": np.where(np.isfinite(pv_rev), pv_rev, np.nan),
         "pv_cost_per_sim": np.where(np.isfinite(pv_cost), pv_cost, np.nan),
-        "pv_profit_per_sim": np.where(np.isfinite(pv_profit), pv_profit, np.nan),
+        "pv_profit_per_sim": np.where(np.isfinite(pv_profit), np.nan_to_num(pv_profit), np.nan),
         "avg_pv_revenue": float(np.nanmean(pv_rev)) if np.isfinite(pv_rev).any() else float("nan"),
         "avg_pv_cost": float(np.nanmean(pv_cost)) if np.isfinite(pv_cost).any() else float("nan"),
         "avg_pv_profit": float(np.nanmean(pv_profit)) if np.isfinite(pv_profit).any() else float("nan"),
@@ -177,7 +177,7 @@ DF_d = make_discount_factors_constant(r_d, T)
 # ------------------------------
 st.subheader("Cash Flows")
 default_cols = {
-    "Cost in domestic currency": [0.0] * T,
+    "Costs in domestic currency": [0.0] * T,
     "Revenue in foreign currency": [0.0] * T,
 }
 cash_df = pd.DataFrame(default_cols)
@@ -187,26 +187,28 @@ cash_df = st.data_editor(cash_df, num_rows="fixed", use_container_width=True)
 def _norm(s: str) -> str:
     return "".join(ch for ch in str(s).lower() if ch.isalnum())
 
-norm_map = {_norm(c): c for c in cash_df.columns}
-cost_candidates = ["costcashflowindomesticcurrency", "cost(dom)", "cashflowindomesticcurrency"]
-rev_candidates = ["cashflowinforeigncurrency", "revenue(for)"]
-
-def _pick_col(candidates):
-    for cand in candidates:
-        key = _norm(cand)
-        if key in norm_map:
-            return norm_map[key]
+# --- Improved robust matching ---
+def _find_col(required_keywords, forbidden_keywords=()):
+    for col in cash_df.columns:
+        s = _norm(col)
+        if all(k in s for k in required_keywords) and all(f not in s for f in forbidden_keywords):
+            return col
     return None
 
-cost_col = _pick_col(cost_candidates)
-rev_col = _pick_col(rev_candidates)
+cost_col = _find_col(("cost",), ("foreign","for","fc"))
+if cost_col is None:
+    cost_col = _find_col(("domestic","currency"), ("foreign","for","fc"))
+
+rev_col = _find_col(("revenue","foreign"))
+if rev_col is None:
+    rev_col = _find_col(("foreign","currency"))
 
 if cost_col is None or rev_col is None:
     st.error("Make sure you have one column for domestic-currency costs and one for foreign-currency revenue.")
     st.stop()
 
 costs_dc = pd.to_numeric(cash_df[cost_col], errors="coerce").fillna(0.0).to_numpy(dtype=float)
-revenue_fc = pd.to_numeric(cash_df[rev_col],  errors="coerce").fillna(0.0).to_numpy(dtype=float)
+revenue_fc = pd.to_numeric(cash_df[rev_col], errors="coerce").fillna(0.0).to_numpy(dtype=float)
 
 # ------------------------------
 # Buttons
