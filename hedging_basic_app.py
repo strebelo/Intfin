@@ -159,10 +159,10 @@ with st.expander("Show math / notation"):
 
 st.sidebar.header("Inputs")
 S0 = st.sidebar.number_input("Current spot S0 (Dom./For. currency)", min_value=1e-9, value=1.17, step=0.01, format="%.6f")
-T = int(st.sidebar.number_input("Time horizon T (years)", min_value=1, max_value=50, value=3, step=1))
+T = int(st.sidebar.number_input("Time horizon T (years)", min_value=1, max_value=50, value=2, step=1))
 sigma = st.sidebar.number_input("Annual FX volatility (%)", min_value=0.0, value=10.0, step=0.5)/100.0
 infl_diff = st.sidebar.number_input("Expected annual change in spot exchange rate, (%/yr)", value=0.0, step=0.25, format="%.4f")/100.0
-r_d = st.sidebar.number_input("Domestic interest rate (%/yr)", value=4.0, step=0.25, format="%.4f")/100.0
+r_d = st.sidebar.number_input("Domestic interest rate (%/yr)", value=2.0, step=0.25, format="%.4f")/100.0
 r_f = st.sidebar.number_input("Foreign interest rate (%/yr)", value=3.0, step=0.25, format="%.4f")/100.0
 spread_bps_per_year = st.sidebar.number_input("Forward bid–ask spread (bps per year of maturity)", min_value=0.0, value=0.0, step=0.5)
 
