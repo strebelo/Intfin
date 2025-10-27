@@ -290,6 +290,6 @@ if hsweep_btn:
         plt.annotate(f"{int(r['h']*100)}%", (r["std"], r["mean"]), textcoords="offset points", xytext=(5,3), fontsize=8)
     plt.xlabel(r"$\sigma(\text{PV Profit})$")
     plt.ylabel(r"$\mathbb{E}[\text{PV Profit}]$")
-    plt.title("Frontier over $h \in [0,1]$ (both strategies)")
+    plt.title("Frontier over $h$ (both strategies)")
     plt.legend()
     st.pyplot(fig)
