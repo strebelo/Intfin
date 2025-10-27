@@ -177,8 +177,8 @@ DF_d = make_discount_factors_constant(r_d, T)
 # ------------------------------
 st.subheader("Cash Flows")
 default_cols = {
-    "Cost cash flow in domestic currency": [0.0] * T,
-    "Cash flow in foreign currency": [0.0] * T,
+    "Cost in domestic currency": [0.0] * T,
+    "Revenue in foreign currency": [0.0] * T,
 }
 cash_df = pd.DataFrame(default_cols)
 cash_df.index = pd.Index(range(1, T+1), name=f"Year (1–{T})")
