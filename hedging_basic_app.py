@@ -233,7 +233,7 @@ sigma = st.sidebar.number_input("Annual FX volatility (%)", min_value=0.0, value
 infl_diff = st.sidebar.number_input("Inflation diff (DOM−FOR, %/yr)", value=0.0, step=0.25, format="%.4f")/100.0
 r_d = st.sidebar.number_input("Domestic interest rate (%/yr)", value=4.0, step=0.25, format="%.4f")/100.0
 r_f = st.sidebar.number_input("Foreign interest rate (%/yr)", value=3.0, step=0.25, format="%.4f")/100.0
-spread_bps_per_year = st.sidebar.number_input("Forward bid–ask spread (bps **per year** of maturity)", min_value=0.0, value=5.0, step=0.5)
+spread_bps_per_year = st.sidebar.number_input("Forward bid–ask spread (bps **per year** of maturity)", min_value=0.0, value=0.0, step=0.5)
 
 st.sidebar.markdown("---")
 h_pct = st.sidebar.number_input("Hedge fraction h (% of each year)", min_value=0.0, max_value=100.0, value=50.0, step=1.0, format="%.1f")
