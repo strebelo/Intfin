@@ -252,7 +252,6 @@ if (1.0+infl_diff)<=0:
 DF_d = make_discount_factors_constant(r_d, T)
 # Cash flows
 st.subheader("Cash Flows")
-st.caption(f"Costs (DOM) and Revenues (FOR) for years **1–{T}**.")
 cash_df = pd.DataFrame({"Cash-flow in domestic currency": [0.0]*T, "Cash-flow in foreign currency": [0.0]*T})
 cash_df.index = pd.Index(range(1, T+1), name=f"Year (1–{T})")
 cash_df = st.data_editor(cash_df, num_rows="fixed", use_container_width=True)
