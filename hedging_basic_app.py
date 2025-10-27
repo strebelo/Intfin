@@ -225,7 +225,6 @@ with st.expander("Show math / notation"):
     st.latex(r"\mu = \ln(1+\pi_{\Delta}) - \tfrac{1}{2}\sigma^2,\quad \mathbb{E}\!\left[\frac{S_t}{S_{t-1}}\right]=1+\pi_{\Delta}")
     st.latex(r"\text{h is the fraction of foreign currency revenue hedged}")
 #   st.latex(r"\text{PV(profit)} = \sum_{t=1}^T \left(\text{revenue}_t^{(DC)}-\text{cost}_t^{(DC)}\right)\cdot DF_d(t)")
-  
 
 st.sidebar.header("Inputs")
 S0 = st.sidebar.number_input("Current spot S0 (Dom./For. currency)", min_value=1e-9, value=1.17, step=0.01, format="%.6f")
@@ -250,14 +249,70 @@ if (1.0+infl_diff)<=0:
     st.stop()
 
 DF_d = make_discount_factors_constant(r_d, T)
-# Cash flows
+
+# ------------------------------
+# Cash Flows (robust column handling)
+# ------------------------------
 st.subheader("Cash Flows")
-cash_df = pd.DataFrame({"Cash-flow in domestic currency": [0.0]*T, "Cash-flow in foreign currency": [0.0]*T})
+
+# Default headers (your new names), but we'll accept many variants too
+default_cols = {
+    "Cost cash flow in domestic currency": [0.0] * T,
+    "Recebue cash flow in foreign currency": [0.0] * T,  # keep your label exactly
+}
+cash_df = pd.DataFrame(default_cols)
 cash_df.index = pd.Index(range(1, T+1), name=f"Year (1–{T})")
 cash_df = st.data_editor(cash_df, num_rows="fixed", use_container_width=True)
-costs_dc = cash_df["Cost (DOM)"].to_numpy(float)
-revenue_fc = cash_df["Revenue (FOR)"].to_numpy(float)
 
+# Helpers to match columns robustly (case/space/punctuation insensitive)
+def _norm(s: str) -> str:
+    return "".join(ch for ch in str(s).lower() if ch.isalnum())
+
+norm_map = {_norm(c): c for c in cash_df.columns}
+
+# Candidate names for costs (DOM)
+cost_candidates = [
+    "cost(dom)", "costs(dom)", "costdom",
+    "cashflowindomesticcurrency", "cashflow(domesticcurrency)",
+    "costcashflowindomesticcurrency",
+    "cost cash flow in domestic currency",
+    "cash-flow in domestic currency",
+]
+
+# Candidate names for revenue (FOR)
+rev_candidates = [
+    "revenue(for)", "revenuefor",
+    "cashflowinforeigncurrency", "cashflow(foreigncurrency)",
+    "revenuecashflowinforeigncurrency",
+    "recebuecashflowinforeigncurrency",  # your new label
+    "cash-flow in foreign currency",
+]
+
+def _pick_col(candidates):
+    for cand in candidates:
+        key = _norm(cand)
+        if key in norm_map:
+            return norm_map[key]
+    return None
+
+cost_col = _pick_col(cost_candidates)
+rev_col  = _pick_col(rev_candidates)
+
+if cost_col is None or rev_col is None:
+    st.error(
+        "I couldn't find both cash-flow columns.\n\n"
+        f"Available columns: {list(cash_df.columns)}\n\n"
+        "Make sure you have one column for **domestic-currency costs** and one for **foreign-currency revenue**."
+    )
+    st.stop()
+
+# Convert to numeric arrays safely
+costs_dc = pd.to_numeric(cash_df[cost_col], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+revenue_fc = pd.to_numeric(cash_df[rev_col],  errors="coerce").fillna(0.0).to_numpy(dtype=float)
+
+# ------------------------------
+# Buttons
+# ------------------------------
 col1, col2 = st.columns([1,1])
 with col1:
     simulate_btn = st.button("Run Simulation")
@@ -270,6 +325,9 @@ def run_paths():
         n_sims=n_sims, T=T, seed=seed
     )
 
+# ------------------------------
+# Actions
+# ------------------------------
 if simulate_btn:
     S_paths = run_paths()
     # Unhedged baseline (for table only)
