@@ -4,7 +4,7 @@
 # Streamlit app — Constant h_t (basic)
 # - LaTeX-rendered math explanations
 # - Bid-ask spread scales per year of tenor
-# - Overlayed PV-profit distributions (Hedge-at-0 vs Hedge one year before cash flow)
+# - Overlayed PV-profit distributions (Hedge-at-0 vs Hedge 1 year before cash flow)
 # ==========================
 
 import numpy as np
@@ -241,7 +241,7 @@ if simulate_btn:
     roll = results_constant_h(S_paths, S0, DF_d, r_d, r_f, costs_dc, revenue_fc, spread_bps_per_year, h=h, strategy="roll_one_year")
 
     summary = pd.DataFrame({
-        "Strategy": ["Unhedged", "Hedge-at-0", "Hedge one year before cash flow"],
+        "Strategy": ["Unhedged", "Hedge-at-0", "Hedge 1 year before cash flow"],
         "Hedge h": [f"{0:.1f}%", f"{h*100:.1f}%", f"{h*100:.1f}%"],
         "Avg PV Revenue (DOM)": [unhedged["avg_pv_revenue"], all0["avg_pv_revenue"], roll["avg_pv_revenue"]],
         "Avg PV Cost (DOM)": [unhedged["avg_pv_cost"], all0["avg_pv_cost"], roll["avg_pv_cost"]],
@@ -255,13 +255,13 @@ if simulate_btn:
     fmt["Frac(PV Profit < 0)"] = (fmt["Frac(PV Profit < 0)"]*100.0).map(lambda x: f"{x:.1f}%")
     st.dataframe(fmt, use_container_width=True)
 
-    st.markdown("#### PV Profit — Overlayed Distributions (Hedge-at-0 vs Hedge one year before cash flow)")
+    st.markdown("#### PV Profit — Overlayed Distributions (Hedge-at-0 vs Hedge 1 year before cash flow)")
     A = all0["pv_profit_per_sim"]; A = A[np.isfinite(A)]
     B = roll["pv_profit_per_sim"]; B = B[np.isfinite(B)]
     if A.size and B.size:
         fig = plt.figure()
         plt.hist(A, bins=40, alpha=0.5, label="Hedge-at-0")
-        plt.hist(B, bins=40, alpha=0.5, label="Hedge one year before cash flow")
+        plt.hist(B, bins=40, alpha=0.5, label="Hedge 1 year before cash flow")
         plt.xlabel("PV Profit (DOM)")
         plt.ylabel("Frequency")
         plt.legend()
@@ -285,7 +285,7 @@ if hsweep_btn:
     plt.scatter(fa["std"], fa["mean"], label="Hedge-at-0")
     for _, r in fa.iterrows():
         plt.annotate(f"{int(r['h']*100)}%", (r["std"], r["mean"]), textcoords="offset points", xytext=(5,3), fontsize=8)
-    plt.scatter(fb["std"], fb["mean"], label="Hedge one year before cash flow")
+    plt.scatter(fb["std"], fb["mean"], label="Hedge 1 year before cash flow")
     for _, r in fb.iterrows():
         plt.annotate(f"{int(r['h']*100)}%", (r["std"], r["mean"]), textcoords="offset points", xytext=(5,3), fontsize=8)
     plt.xlabel(r"$\sigma(\text{PV Profit})$")
