@@ -258,7 +258,7 @@ st.subheader("Cash Flows")
 # Default headers (your new names), but we'll accept many variants too
 default_cols = {
     "Cost cash flow in domestic currency": [0.0] * T,
-    "Recebue cash flow in foreign currency": [0.0] * T,  # keep your label exactly
+    "revenue cash flow in foreign currency": [0.0] * T,  # keep your label exactly
 }
 cash_df = pd.DataFrame(default_cols)
 cash_df.index = pd.Index(range(1, T+1), name=f"Year (1–{T})")
@@ -284,7 +284,7 @@ rev_candidates = [
     "revenue(for)", "revenuefor",
     "cashflowinforeigncurrency", "cashflow(foreigncurrency)",
     "revenuecashflowinforeigncurrency",
-    "recebuecashflowinforeigncurrency",  # your new label
+    "revenuecashflowinforeigncurrency",  # your new label
     "cash-flow in foreign currency",
 ]
 
