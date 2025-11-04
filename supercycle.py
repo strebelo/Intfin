@@ -1,4 +1,4 @@
-# supercycle.py
+# supercycle_game_matrix_discrete.py
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -83,15 +83,16 @@ def init_sim(T_new):
 
 # First-time setup default T
 if "initialized" not in st.session_state:
-    init_sim(200)
+    init_sim(50)
 
 # -----------------------------
-# Left controls (T and period controls) + Right table
+# Left controls (T + period controls) and Right table
 # -----------------------------
 left, right = st.columns([1, 2])
 
 with left:
     st.subheader("Game Controls")
+
     # Let user set the length T here (left side)
     T_input = st.number_input("Game length T", min_value=10, max_value=1000, value=int(st.session_state.T), step=10)
     apply_T = st.button("Apply T and Reset")
@@ -99,7 +100,7 @@ with left:
         init_sim(int(T_input))
         st.rerun()
 
-    # Current period display
+    # Current state
     t = st.session_state.t
     T = st.session_state.T
     p = st.session_state.p
@@ -109,15 +110,15 @@ with left:
     k = st.session_state.k
     r = st.session_state.r
 
-    # Discrete slider for investment choices
-    st.write(f"Period t = {t} of {T}")
+    # Show current period (1-based label)
+    st.subheader(f"Current period: {t}")
+
+    # Discrete slider and commit
     if t < T:
-        # Slider with discrete options
         inv_options = [0, 5, 10, 15, 20]
         default_i = 0 if np.isnan(i[t]) else int(i[t])
         i_t_choice = st.select_slider("Choose investment i_t", options=inv_options, value=default_i, key=f"i_choice_{t}")
 
-        # Commit button
         commit = st.button("Commit i_t and advance")
         if commit:
             # Delivered depends on i_{t-k} or pre-sample history
@@ -151,7 +152,7 @@ with right:
             return float(i[j - k])
         return float(i_hist[j - k]) if (j - k) < 0 else 0.0
 
-    # Build matrix for realized periods (0..t-1), latest first
+    # Build matrix for realized periods (0..t-1)
     t = st.session_state.t
     T = st.session_state.T
     p = st.session_state.p
@@ -161,20 +162,24 @@ with right:
     if t > 0:
         out_hist = [delivered_at(j) for j in range(t)]
         rev_hist = [p[j] * out_hist[j] for j in range(t)]
+        periods = np.arange(1, t + 1)  # 1-based period numbers
+
         df = pd.DataFrame(
             {
+                "period": periods,
                 "price": p[:t],
                 "output": out_hist,
                 "revenue": rev_hist,
                 "assets": a[1:t+1],  # end-of-period assets
                 "investment": i[:t],
-            },
-            index=np.arange(t),
+            }
         )
+        # Show most recent first
         df_display = df.iloc[::-1].reset_index(drop=True)
     else:
         df_display = pd.DataFrame(
             {
+                "period": [1],
                 "price": [p[0]],
                 "output": [np.nan],
                 "revenue": [np.nan],
