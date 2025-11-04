@@ -40,7 +40,7 @@ st.set_page_config(page_title="Investment-Lag Model (Game Mode)", layout="wide")
 st.title("Investment-Lag Commodity Model")
 
 with st.sidebar:
-    k = st.number_input("Lag k (periods)", min_value=1, max_value=24, value=4, step=1)
+    k = st.number_input("Lag k (s)", min_value=1, max_value=24, value=4, step=1)
 
     theta_c = st.number_input("Demand elasticity theta_c", min_value=0.1, max_value=10.0, value=1.0, step=0.1)
     theta_i = st.number_input("Investment elasticity theta_i", min_value=0.1, max_value=10.0, value=1.0, step=0.1)
@@ -52,7 +52,7 @@ with st.sidebar:
     sigma_c = st.number_input("sigma_c (demand shocks)", min_value=0.0, max_value=2.0, value=0.05, step=0.01)
     sigma_i = st.number_input("sigma_i (investment shocks)", min_value=0.0, max_value=2.0, value=0.05, step=0.01)
 
-    bump_periods = st.slider("Positive shock periods", 0, 50, 10, 1)
+    bump_s = st.slider("Positive shock s", 0, 50, 10, 1)
     bump_size = st.number_input("Bump size", min_value=0.0, max_value=5.0, value=1.5, step=0.1)
     seed = st.number_input("Random seed", min_value=0, max_value=10000, value=1234, step=1)
 
@@ -60,14 +60,14 @@ with st.sidebar:
     p_init_val = st.number_input("Initial pre-sample price (repeated k times)", min_value=1e-6, max_value=1e6, value=1.0, step=0.1, format="%.6f")
     i_hist_val = st.number_input("Inherited pre-sample investment (repeated k times)", min_value=0.0, max_value=1e6, value=0.0, step=10.0, format="%.2f")
 
-    r = st.number_input("Interest rate r (per period)", min_value=-0.99, max_value=10.0, value=0.01, step=0.01)
+    r = st.number_input("Interest rate r (per )", min_value=-0.99, max_value=10.0, value=0.01, step=0.01)
 
 # -----------------------------
 # Initialize / reset simulation
 # -----------------------------
 def init_sim(T_new):
-    alpha_c = ar1_path(int(T_new), rho_c, mu_c, sigma_c, int(seed) + 1, int(bump_periods), bump_size)
-    alpha_i = ar1_path(int(T_new), rho_i, mu_i, sigma_i, int(seed) + 2, int(bump_periods), bump_size)
+    alpha_c = ar1_path(int(T_new), rho_c, mu_c, sigma_c, int(seed) + 1, int(bump_s), bump_size)
+    alpha_i = ar1_path(int(T_new), rho_i, mu_i, sigma_i, int(seed) + 2, int(bump_s), bump_size)
     p = equilibrium_price_path(int(T_new), int(k), alpha_c, alpha_i, theta_c, theta_i, np.full(int(k), float(p_init_val)))
 
     st.session_state.T = int(T_new)
@@ -86,7 +86,7 @@ if "initialized" not in st.session_state:
     init_sim(50)
 
 # -----------------------------
-# Left controls (T + period controls) and Right table
+# Left controls (T +  controls) and Right table
 # -----------------------------
 left, right = st.columns([1, 2])
 
@@ -110,8 +110,8 @@ with left:
     k = st.session_state.k
     r = st.session_state.r
 
-    # Show current period (1-based label)
-    st.subheader(f"Current period: {t}")
+    # Show current  (1-based label)
+    st.subheader(f"Current : {t}")
 
     # Discrete slider and commit
     if t < T:
@@ -152,7 +152,7 @@ with right:
             return float(i[j - k])
         return float(i_hist[j - k]) if (j - k) < 0 else 0.0
 
-    # Build matrix for realized periods (0..t-1)
+    # Build matrix for realized s (0..t-1)
     t = st.session_state.t
     T = st.session_state.T
     p = st.session_state.p
@@ -162,11 +162,11 @@ with right:
     if t > 0:
         out_hist = [delivered_at(j) for j in range(t)]
         rev_hist = [p[j] * out_hist[j] for j in range(t)]
-        periods = np.arange(1, t + 1)  # 1-based period numbers
+        s = np.arange(1, t + 1)  # 1-based  numbers
 
         df = pd.DataFrame(
             {
-                "period": periods,
+                "time": periods,
                 "price": p[:t],
                 "output": out_hist,
                 "revenue": rev_hist,
