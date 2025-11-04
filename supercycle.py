@@ -1,4 +1,4 @@
-# supercycle_game_matrix_discrete.py
+iod# supercycle_game_matrix_discrete.py
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -166,7 +166,7 @@ with right:
 
         df = pd.DataFrame(
             {
-                "time": periods,
+                "period": periods,
                 "price": p[:t],
                 "output": out_hist,
                 "revenue": rev_hist,
