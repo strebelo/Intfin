@@ -1,4 +1,4 @@
-iod# supercycle_game_matrix_discrete.py
+# supercycle_game_matrix_discrete.py
 import numpy as np
 import pandas as pd
 import streamlit as st
