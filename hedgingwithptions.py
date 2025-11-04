@@ -1,0 +1,481 @@
+# ==========================
+# hedgingwithptions.py
+# ==========================
+# Streamlit app — Constant h_t (basic)
+# - LaTeX-rendered math explanations
+# - Bid-ask spread scales per year of tenor
+# - Overlayed PV-profit distributions (Hedge at 0 vs Hedge 1 year before cash flow)
+# - NEW: Options hedging (Garman–Kohlhagen) with strike as % of forward
+# ==========================
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+import matplotlib.pyplot as plt
+from math import log, sqrt, exp, erf
+
+# ------------------------------
+# Math helpers & pricing
+# ------------------------------
+def make_discount_factors_constant(r: float, T: int):
+    DF = np.ones(T + 1, dtype=float)
+    base = 1.0 + float(r)
+    if base <= 0:
+        base = 1e-9
+    for t in range(1, T + 1):
+        DF[t] = 1.0 / (base ** t)
+    return DF
+
+
+def forward_dc_per_fc_constant_rate(S_t_dc_fc, r_d, r_f, t, m):
+    """ CIP-style forward (mid) with constant rates rd, rf. """
+    if m <= t:
+        raise ValueError("Forward maturity m must be greater than t.")
+    horiz = m - t
+    num = (1.0 + float(r_d)) ** horiz
+    den = (1.0 + float(r_f)) ** horiz
+    if den <= 0:
+        den = 1e-12
+    return S_t_dc_fc * (num / den)
+
+
+def bid_ask_from_mid_tenor_scaled(mid, spread_bps_per_year, years):
+    """ Scale spread by tenor: s_total = (bps_per_year * years)/10000. """
+    s_total = max(0.0, float(spread_bps_per_year)) * float(years) / 10000.0
+    bid = mid * (1.0 - s_total / 2.0)
+    ask = mid * (1.0 + s_total / 2.0)
+    return bid, ask
+
+
+def simulate_spot_paths_dc_fc_with_infl_drift(S0_dc_fc, sigma, infl_diff, n_sims, T, seed=123):
+    if sigma < 0:
+        raise ValueError("Volatility must be non-negative.")
+    if (1.0 + infl_diff) <= 0.0:
+        raise ValueError("Inflation differential too negative (1 + pi_Delta must be > 0).")
+
+    rng = np.random.default_rng(seed)
+    paths = np.empty((n_sims, T + 1), dtype=float)
+    paths[:, 0] = float(S0_dc_fc)
+    mu_adj = np.log1p(infl_diff) - 0.5 * (sigma ** 2)
+
+    for t in range(1, T + 1):
+        eps = rng.standard_normal(n_sims)
+        growth = np.exp(mu_adj + sigma * eps)
+        paths[:, t] = np.maximum(1e-12, paths[:, t - 1] * growth)
+
+    return paths
+
+
+# -------- NEW: Garman–Kohlhagen (Black–Scholes for FX), put on S (DC/FC) ------
+def _phi(x: float) -> float:
+    """Standard normal CDF via error function (no scipy dependency)."""
+    return 0.5 * (1.0 + erf(x / sqrt(2.0)))
+
+
+def gk_put_price_fx(S, K, r_d, r_f, sigma, tau):
+    """
+    FX put on S (DC/FC). Returns price in DC per 1 FC notional.
+    S, K in DC/FC; r_d, r_f are simple annual rates (converted to CC here).
+    """
+    if tau <= 0:
+        return max(float(K) - float(S), 0.0)
+    if sigma <= 0:
+        return max(float(K) - float(S), 0.0)
+
+    # Convert simple rates to continuous for GK formula
+    rd_cc = log(1.0 + float(r_d))
+    rf_cc = log(1.0 + float(r_f))
+
+    S = float(S)
+    K = float(K)
+    vol_sqrt_t = sigma * sqrt(tau)
+    d1 = (log(max(S, 1e-300) / max(K, 1e-300)) + (rd_cc - rf_cc + 0.5 * sigma ** 2) * tau) / max(vol_sqrt_t, 1e-12)
+    d2 = d1 - vol_sqrt_t
+    P = K * exp(-rd_cc * tau) * _phi(-d2) - S * exp(-rf_cc * tau) * _phi(-d1)
+    return float(P)
+
+
+# ------------------------------
+# Engines
+# ------------------------------
+def results_constant_h(
+    S_paths, S0, DF_d,
+    r_d, r_f,
+    costs_dc, revenue_fc,
+    spread_bps_per_year,
+    h,
+    strategy,                  # 'all_at_t0' or 'roll_one_year'
+    hedge_instrument="forward",# 'forward' or 'option_put'
+    option_moneyness=1.00,     # strike as % of forward
+    sigma=None
+):
+    """
+    For FC revenues, forwards: deliver hedged_fc * F (bid).
+    For FC revenues, options: buy a **put** on S with K = m * Forward.
+      - 'all_at_t0': buy at t=0, maturities t=1..T (pay premium at t=0).
+      - 'roll_one_year': buy each year at t-1 for maturity t (pay premium at t-1).
+    Premiums are added to costs at the time they are paid (discounted via DF_d).
+    """
+    n_sims, T_plus_1 = S_paths.shape
+    T = T_plus_1 - 1
+
+    # If user provided T+1 rows (t=0..T), ignore t=0 for revenues, keep for costs
+    if len(revenue_fc) == T + 1:
+        revenue_fc = revenue_fc[1:]
+    if len(costs_dc) == T + 1:
+        cost_t0 = costs_dc[0]
+        costs_dc = costs_dc[1:]
+    else:
+        cost_t0 = 0.0
+
+    dc_rev_t = np.zeros((n_sims, T), dtype=float)
+    dc_costs_t = np.zeros((n_sims, T), dtype=float)
+    h = float(np.clip(h, 0.0, 1.0))
+
+    # ---------- FORWARDS ----------
+    if hedge_instrument == "forward":
+        if strategy == "all_at_t0":
+            for t in range(1, T + 1):
+                F_mid_0t = forward_dc_per_fc_constant_rate(S0, r_d, r_f, 0, t)
+                bid_0t, _ = bid_ask_from_mid_tenor_scaled(F_mid_0t, spread_bps_per_year, years=t)
+                hedged_fc = h * revenue_fc[t - 1]
+                unhedged_fc = (1.0 - h) * revenue_fc[t - 1]
+                dc_forward = hedged_fc * bid_0t
+                spot_t = np.maximum(S_paths[:, t], 1e-12)
+                dc_unhedged = unhedged_fc * spot_t
+                dc_rev_t[:, t - 1] = dc_forward + dc_unhedged
+
+        elif strategy == "roll_one_year":
+            ratio = (1.0 + float(r_d)) / max(1e-12, (1.0 + float(r_f)))
+            for t in range(1, T + 1):
+                hedged_fc = h * revenue_fc[t - 1]
+                unhedged_fc = (1.0 - h) * revenue_fc[t - 1]
+                S_prev = S_paths[:, t - 1]
+                F_mid_prev_t = S_prev * ratio
+                bid_prev_t, _ = bid_ask_from_mid_tenor_scaled(F_mid_prev_t, spread_bps_per_year, years=1.0)
+                dc_forward = hedged_fc * bid_prev_t
+                spot_t = np.maximum(S_paths[:, t], 1e-12)
+                dc_unhedged = unhedged_fc * spot_t
+                dc_rev_t[:, t - 1] = dc_forward + dc_unhedged
+        else:
+            raise ValueError("Unknown strategy.")
+
+    # ---------- OPTIONS (long FC PUT) ----------
+    elif hedge_instrument == "option_put":
+        if sigma is None:
+            raise ValueError("sigma must be provided for option pricing.")
+
+        if strategy == "all_at_t0":
+            # Pay premiums at t=0 across all maturities (deterministic across sims)
+            premium_t0_total = 0.0
+            for t in range(1, T + 1):
+                hedged_fc = h * revenue_fc[t - 1]
+                unhedged_fc = (1.0 - h) * revenue_fc[t - 1]
+
+                # Strike = m * Forward(0->t) using mid (no spread for options strike)
+                F_mid_0t = forward_dc_per_fc_constant_rate(S0, r_d, r_f, 0, t)
+                K_t = option_moneyness * F_mid_0t
+
+                # Premium per 1 FC at t=0
+                P_0t = gk_put_price_fx(S0, K_t, r_d, r_f, sigma, tau=float(t))
+                premium_t0_total += hedged_fc * P_0t  # paid at t=0 (no discounting)
+
+                # Payoff at t
+                spot_t = np.maximum(S_paths[:, t], 1e-12)
+                payoff_put = np.maximum(K_t - spot_t, 0.0)  # DC per FC
+                dc_from_option = hedged_fc * payoff_put
+                dc_unhedged = unhedged_fc * spot_t
+                dc_rev_t[:, t - 1] = dc_from_option + dc_unhedged
+
+        elif strategy == "roll_one_year":
+            # Buy 1Y put each year at t-1; premium paid at t-1 (stochastic)
+            for t in range(1, T + 1):
+                hedged_fc = h * revenue_fc[t - 1]
+                unhedged_fc = (1.0 - h) * revenue_fc[t - 1]
+                spot_prev = np.maximum(S_paths[:, t - 1], 1e-12)
+
+                # Forward(mid) for (t-1)->t; strike = m * F(mid)
+                F_mid_prev_t = forward_dc_per_fc_constant_rate(spot_prev, r_d, r_f, t - 1, t)
+                K_t = option_moneyness * F_mid_prev_t
+
+                # Premium at t-1, path-by-path
+                prem_vec = np.empty_like(spot_prev)
+                for i in range(spot_prev.shape[0]):
+                    prem_vec[i] = gk_put_price_fx(spot_prev[i], K_t[i], r_d, r_f, sigma, tau=1.0)
+
+                # Add premiums to costs at year t (index t-1)
+                dc_costs_t[:, t - 1] += hedged_fc * prem_vec
+
+                # Payoff at t
+                spot_t = np.maximum(S_paths[:, t], 1e-12)
+                payoff_put = np.maximum(K_t - spot_t, 0.0)
+                dc_from_option = hedged_fc * payoff_put
+                dc_unhedged = unhedged_fc * spot_t
+                dc_rev_t[:, t - 1] = dc_from_option + dc_unhedged
+        else:
+            raise ValueError("Unknown strategy.")
+    else:
+        raise ValueError("Unknown hedge_instrument: use 'forward' or 'option_put'.")
+
+    # Add operating costs
+    for t in range(1, T + 1):
+        dc_costs_t[:, t - 1] += costs_dc[t - 1]
+
+    # Discount & aggregate
+    pv_rev = np.sum(dc_rev_t * DF_d[1:][None, :], axis=1)
+    pv_cost = np.sum(dc_costs_t * DF_d[1:][None, :], axis=1) + cost_t0  # add t=0 cost
+
+    # For all_at_t0 + options: premiums paid at t=0 already embedded via 'premium_t0_total'
+    # Add them now as a constant PV cost across simulations
+    if hedge_instrument == "option_put" and strategy == "all_at_t0":
+        # premium_t0_total is scalar computed in the loop scope. Retrieve via closure:
+        # Workaround: recompute deterministically (cheap since T is small).
+        premium_t0_total = 0.0
+        for t in range(1, T + 1):
+            hedged_fc = h * revenue_fc[t - 1]
+            F_mid_0t = forward_dc_per_fc_constant_rate(S0, r_d, r_f, 0, t)
+            K_t = option_moneyness * F_mid_0t
+            P_0t = gk_put_price_fx(S0, K_t, r_d, r_f, sigma, tau=float(t))
+            premium_t0_total += hedged_fc * P_0t
+        pv_cost = pv_cost + premium_t0_total  # pay at t=0 (no discount)
+
+    pv_profit = pv_rev - pv_cost
+
+    def _nanstd(x):
+        x = x[np.isfinite(x)]
+        if x.size <= 1:
+            return 0.0
+        return float(np.std(x, ddof=1))
+
+    def _fracneg(x):
+        x = x[np.isfinite(x)]
+        if x.size == 0:
+            return float("nan")
+        return float(np.mean(x < 0.0))
+
+    out = {
+        "pv_revenue_per_sim": np.where(np.isfinite(pv_rev), pv_rev, np.nan),
+        "pv_cost_per_sim": np.where(np.isfinite(pv_cost), pv_cost, np.nan),
+        "pv_profit_per_sim": np.where(np.isfinite(pv_profit), pv_profit, np.nan),
+        "avg_pv_revenue": float(np.nanmean(pv_rev)) if np.isfinite(pv_rev).any() else float("nan"),
+        "avg_pv_cost": float(np.nanmean(pv_cost)) if np.isfinite(pv_cost).any() else float("nan"),
+        "avg_pv_profit": float(np.nanmean(pv_profit)) if np.isfinite(pv_profit).any() else float("nan"),
+        "std_pv_profit": _nanstd(pv_profit),
+        "frac_neg_profit": _fracneg(pv_profit),
+    }
+    return out
+
+# ------------------------------
+# Streamlit UI
+# ------------------------------
+st.set_page_config(page_title="Currency Hedging — Basic (constant h_t)", layout="wide")
+st.title("💱 Currency Risk Hedging Laboratory")
+
+with st.expander("Show math / notation"):
+    st.latex(r"F_{t,m} = S_t \cdot \frac{(1+r_d)^{m-t}}{(1+r_f)^{m-t}}")
+    st.latex(r"\mu = \ln(1+\pi_{\Delta}) - \tfrac{1}{2}\sigma^2,\quad \mathbb{E}\!\left[\frac{S_t}{S_{t-1}}\right]=1+\pi_{\Delta}")
+    st.latex(r"\text{h is the fraction of foreign currency revenue hedged}")
+    st.markdown("---")
+    st.markdown("**FX Option (Garman–Kohlhagen, put on S quoted DC/FC)**")
+    st.latex(r"""
+    \begin{aligned}
+    d_1 &= \frac{\ln(S/K) + (r_d - r_f + \tfrac{1}{2}\sigma^2)\tau}{\sigma\sqrt{\tau}},\quad
+    d_2 = d_1 - \sigma\sqrt{\tau} \\
+    P &= K e^{-r_d \tau} N(-d_2) \;-\; S e^{-r_f \tau} N(-d_1)
+    \end{aligned}
+    """)
+    st.markdown("Strike is set as **m × Forward** at the hedge time (100% = ATM-forward). Premiums are paid at the hedge time.")
+
+st.sidebar.header("Inputs")
+S0 = st.sidebar.number_input("Current spot S0 (Dom./For. currency)", min_value=1e-9, value=1.17, step=0.01, format="%.6f")
+T = int(st.sidebar.number_input("Time horizon T (years)", min_value=1, max_value=50, value=2, step=1))
+sigma = st.sidebar.number_input("Annual FX volatility (%)", min_value=0.0, value=10.0, step=0.5)/100.0
+infl_diff = st.sidebar.number_input("Expected annual change in spot exchange rate, (%/yr)", value=0.0, step=0.25, format="%.4f")/100.0
+r_d = st.sidebar.number_input("Domestic interest rate (%/yr)", value=2.0, step=0.25, format="%.4f")/100.0
+r_f = st.sidebar.number_input("Foreign interest rate (%/yr)", value=3.0, step=0.25, format="%.4f")/100.0
+spread_bps_per_year = st.sidebar.number_input("Forward bid–ask spread (bps per year of maturity)", min_value=0.0, value=0.0, step=0.5)
+
+st.sidebar.markdown("---")
+hedge_instrument = st.sidebar.radio(
+    "Hedge instrument",
+    ["Forwards", "Options (long FC put)"],
+    index=0,
+    help="For FC revenues, options use a long put on S (DC/FC); strike = m × forward."
+)
+use_options = hedge_instrument.startswith("Options")
+if use_options:
+    option_moneyness_pct = st.sidebar.number_input(
+        "Option moneyness (% of forward)",
+        min_value=50.0, max_value=150.0, value=100.0, step=1.0,
+        help="Strike K = m × Forward at hedge time (100% = ATM-forward)."
+    )
+    option_moneyness = option_moneyness_pct / 100.0
+else:
+    option_moneyness = 1.0  # unused for forwards
+
+st.sidebar.markdown("---")
+h_pct = st.sidebar.number_input("Hedge fraction h (% of each year)", min_value=0.0, max_value=100.0, value=50.0, step=1.0, format="%.1f")
+h = h_pct/100.0
+n_sims = int(st.sidebar.number_input("Number of simulations", min_value=1, value=5000, step=100))
+seed = int(st.sidebar.number_input("Random seed", min_value=0, value=42, step=1))
+
+if (1.0+r_d)<=0 or (1.0+r_f)<=0:
+    st.error("Rates must be > -100%.")
+    st.stop()
+if (1.0+infl_diff)<=0:
+    st.error("Inflation differential too negative: require 1 + (DOM−FOR) > 0.")
+    st.stop()
+
+DF_d = make_discount_factors_constant(r_d, T)
+
+# ------------------------------
+# Cash Flows (now includes t=0)
+# ------------------------------
+st.subheader("Cash Flows (including t = 0)")
+default_cols = {
+    "Costs in domestic currency": [0.0] * (T + 1),
+    "Revenue in foreign currency": [0.0] * (T + 1),
+}
+cash_df = pd.DataFrame(default_cols)
+cash_df.index = pd.Index(range(0, T + 1), name=f"Year (0–{T})")
+cash_df = st.data_editor(cash_df, num_rows="fixed", use_container_width=True)
+
+def _norm(s: str) -> str:
+    return "".join(ch for ch in str(s).lower() if ch.isalnum())
+
+# --- Improved robust matching ---
+def _find_col(required_keywords, forbidden_keywords=()):
+    for col in cash_df.columns:
+        s = _norm(col)
+        if all(k in s for k in required_keywords) and all(f not in s for f in forbidden_keywords):
+            return col
+    return None
+
+cost_col = _find_col(("cost",), ("foreign","for","fc"))
+if cost_col is None:
+    cost_col = _find_col(("domestic","currency"), ("foreign","for","fc"))
+
+rev_col = _find_col(("revenue","foreign"))
+if rev_col is None:
+    rev_col = _find_col(("foreign","currency"))
+
+if cost_col is None or rev_col is None:
+    st.error("Make sure you have one column for domestic-currency costs and one for foreign-currency revenue.")
+    st.stop()
+
+costs_dc = pd.to_numeric(cash_df[cost_col], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+revenue_fc = pd.to_numeric(cash_df[rev_col], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+
+# ------------------------------
+# Buttons
+# ------------------------------
+col1, col2 = st.columns([1,1])
+with col1:
+    simulate_btn = st.button("Run Simulation")
+with col2:
+    hsweep_btn = st.button("Plot Vol vs Mean, vary h")
+
+def run_paths():
+    return simulate_spot_paths_dc_fc_with_infl_drift(S0, sigma, infl_diff, n_sims, T, seed)
+
+# ------------------------------
+# Actions
+# ------------------------------
+if simulate_btn:
+    S_paths = run_paths()
+    instr_key = "option_put" if use_options else "forward"
+
+    unhedged = results_constant_h(
+        S_paths, S0, DF_d, r_d, r_f,
+        costs_dc, revenue_fc,
+        spread_bps_per_year,
+        h=0.0,
+        strategy="all_at_t0",
+        hedge_instrument=instr_key,
+        option_moneyness=option_moneyness,
+        sigma=sigma
+    )
+    all0 = results_constant_h(
+        S_paths, S0, DF_d, r_d, r_f,
+        costs_dc, revenue_fc,
+        spread_bps_per_year,
+        h=h,
+        strategy="all_at_t0",
+        hedge_instrument=instr_key,
+        option_moneyness=option_moneyness,
+        sigma=sigma
+    )
+    roll = results_constant_h(
+        S_paths, S0, DF_d, r_d, r_f,
+        costs_dc, revenue_fc,
+        spread_bps_per_year,
+        h=h,
+        strategy="roll_one_year",
+        hedge_instrument=instr_key,
+        option_moneyness=option_moneyness,
+        sigma=sigma
+    )
+
+    label_instr = "Options" if use_options else "Forwards"
+    summary = pd.DataFrame({
+        "Strategy": ["Unhedged", f"Hedge at 0 ({label_instr})", f"Hedge 1 year before cash flow ({label_instr})"],
+        "Hedge h": [f"{0:.1f}%", f"{h*100:.1f}%", f"{h*100:.1f}%"],
+        "Avg PV Revenue (DOM)": [unhedged["avg_pv_revenue"], all0["avg_pv_revenue"], roll["avg_pv_revenue"]],
+        "Avg PV Cost (DOM)": [unhedged["avg_pv_cost"], all0["avg_pv_cost"], roll["avg_pv_cost"]],
+        "Avg PV Profit (DOM)": [unhedged["avg_pv_profit"], all0["avg_pv_profit"], roll["avg_pv_profit"]],
+        "StdDev PV Profit": [unhedged["std_pv_profit"], all0["std_pv_profit"], roll["std_pv_profit"]],
+        "Frac(PV Profit < 0)": [unhedged["frac_neg_profit"], all0["frac_neg_profit"], roll["frac_neg_profit"]],
+    })
+    fmt = summary.copy()
+    for col in ["Avg PV Revenue (DOM)", "Avg PV Cost (DOM)", "Avg PV Profit (DOM)", "StdDev PV Profit"]:
+        fmt[col] = fmt[col].map(lambda x: f"{x:,.2f}")
+    fmt["Frac(PV Profit < 0)"] = (fmt["Frac(PV Profit < 0)"]*100.0).map(lambda x: f"{x:.1f}%")
+    st.dataframe(fmt, use_container_width=True)
+
+    st.markdown("#### PV Profit — Overlayed Distributions (Hedge at 0 vs Hedge 1 year before cash flow)")
+    A = all0["pv_profit_per_sim"]; A = A[np.isfinite(A)]
+    B = roll["pv_profit_per_sim"]; B = B[np.isfinite(B)]
+    if A.size and B.size:
+        fig = plt.figure()
+        plt.hist(A, bins=40, alpha=0.5, label=f"Hedge at 0 ({label_instr})")
+        plt.hist(B, bins=40, alpha=0.5, label=f"Hedge 1 year before cash flow ({label_instr})")
+        plt.xlabel("PV Profit (DOM)")
+        plt.ylabel("Frequency")
+        plt.legend()
+        plt.title("PV Profit: Overlayed Distributions")
+        st.pyplot(fig)
+    else:
+        st.info("Not enough finite values to plot.")
+
+if hsweep_btn:
+    S_paths = run_paths()
+    hs = np.linspace(0.0, 1.0, 11)
+    instr_key = "option_put" if hedge_instrument.startswith("Options") else "forward"
+    rows_all0, rows_roll = [], []
+    for hv in hs:
+        rA = results_constant_h(
+            S_paths, S0, DF_d, r_d, r_f, costs_dc, revenue_fc, spread_bps_per_year,
+            h=hv, strategy="all_at_t0",
+            hedge_instrument=instr_key, option_moneyness=option_moneyness, sigma=sigma
+        )
+        rB = results_constant_h(
+            S_paths, S0, DF_d, r_d, r_f, costs_dc, revenue_fc, spread_bps_per_year,
+            h=hv, strategy="roll_one_year",
+            hedge_instrument=instr_key, option_moneyness=option_moneyness, sigma=sigma
+        )
+        rows_all0.append({"h": hv, "mean": rA["avg_pv_profit"], "std": rA["std_pv_profit"]})
+        rows_roll.append({"h": hv, "mean": rB["avg_pv_profit"], "std": rB["std_pv_profit"]})
+    fa = pd.DataFrame(rows_all0)
+    fb = pd.DataFrame(rows_roll)
+    fig = plt.figure()
+    plt.scatter(fa["std"], fa["mean"], label="Hedge at 0")
+    for _, r in fa.iterrows():
+        plt.annotate(f"{int(r['h']*100)}%", (r["std"], r["mean"]), textcoords="offset points", xytext=(5,3), fontsize=8)
+    plt.scatter(fb["std"], fb["mean"], label="Hedge 1 year before cash flow")
+    for _, r in fb.iterrows():
+        plt.annotate(f"{int(r['h']*100)}%", (r["std"], r["mean"]), textcoords="offset points", xytext=(5,3), fontsize=8)
+    plt.xlabel(r"$\sigma(\text{PV Profit})$")
+    plt.ylabel(r"$\mathbb{E}[\text{PV Profit}]$")
+    plt.title("Frontier over $h$ (both strategies)")
+    plt.legend()
+    st.pyplot(fig)
