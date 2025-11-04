@@ -1,12 +1,12 @@
 # supercycle.py
-
+# supercycle_game_table.py
 import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
 # -----------------------------
-# Helpers
+# Helper functions
 # -----------------------------
 def ar1_path(T, rho, mu=1.0, sigma=0.05, seed=0, positive_bump_periods=5, bump_size=1.0):
     rng = np.random.default_rng(seed)
@@ -20,10 +20,10 @@ def ar1_path(T, rho, mu=1.0, sigma=0.05, seed=0, positive_bump_periods=5, bump_s
     alpha[0] = (1 - rho) * mu + rho * mu + sigma * eps[0]
     return alpha
 
+
 def equilibrium_price_path(T, k, alpha_c, alpha_i, theta_c, theta_i, p_init=None):
     if p_init is None:
         p_init = np.ones(k)
-    assert len(p_init) == k, "p_init must have length k"
     p = np.empty(T)
     p[:k] = p_init
     for t in range(k, T):
@@ -33,11 +33,13 @@ def equilibrium_price_path(T, k, alpha_c, alpha_i, theta_c, theta_i, p_init=None
         p[t] = max(p_t, 1e-10)
     return p
 
+
 def step_assets(a_t, r, p_t, delivered, i_t):
     return a_t * (1.0 + r) + p_t * delivered - i_t
 
+
 # -----------------------------
-# Page / sidebar
+# Streamlit setup
 # -----------------------------
 st.set_page_config(page_title="Investment-Lag Model (Game Mode)", layout="wide")
 st.title("Investment-Lag Commodity Model")
@@ -61,15 +63,16 @@ with st.sidebar:
     seed = st.number_input("Random seed", min_value=0, max_value=10000, value=1234, step=1)
 
     a0 = st.number_input("Initial assets a0", min_value=-1_000_000.0, max_value=1_000_000.0, value=0.0, step=100.0, format="%.2f")
-    p_init_val = st.number_input("Initial pre-sample price (repeated k times)", min_value=1e-6, max_value=1e6.0, value=1.0, step=0.1, format="%.6f")
-    i_hist_val = st.number_input("Inherited pre-sample investment (repeated k times)", min_value=0.0, max_value=1e6.0, value=0.0, step=10.0, format="%.2f")
+    p_init_val = st.number_input("Initial pre-sample price (repeated k times)", min_value=1e-6, max_value=1e6, value=1.0, step=0.1, format="%.6f")
+    i_hist_val = st.number_input("Inherited pre-sample investment (repeated k times)", min_value=0.0, max_value=1e6, value=0.0, step=10.0, format="%.2f")
 
     r = st.number_input("Interest rate r (per period)", min_value=-0.99, max_value=10.0, value=0.01, step=0.01)
 
     reset_clicked = st.button("Reset / Start", type="primary")
 
+
 # -----------------------------
-# Init / reset
+# Initialize / reset simulation
 # -----------------------------
 def init_sim():
     alpha_c = ar1_path(int(T), rho_c, mu_c, sigma_c, int(seed) + 1, int(bump_periods), bump_size)
@@ -87,8 +90,10 @@ def init_sim():
     st.session_state.t = 0
     st.session_state.initialized = True
 
+
 if reset_clicked or ("initialized" not in st.session_state):
     init_sim()
+
 
 # -----------------------------
 # State
@@ -102,6 +107,7 @@ i = st.session_state.i
 a = st.session_state.a
 t = st.session_state.t
 
+
 # -----------------------------
 # Top: price chart only
 # -----------------------------
@@ -112,17 +118,18 @@ ax.set_ylabel("price p_t")
 ax.grid(True, alpha=0.3)
 st.pyplot(fig_price, clear_figure=True)
 
+
 # -----------------------------
-# Delivered/output & revenue for current period
+# Delivered/output & revenue
 # -----------------------------
 def delivered_at(j):
     if (j - k) >= 0 and not np.isnan(i[j - k]):
         return float(i[j - k])
     return float(i_hist[j - k]) if (j - k) < 0 else 0.0
 
+
 # -----------------------------
 # Table: price, output, revenue, assets, investment
-# rows = completed periods only (0..t-1)
 # -----------------------------
 if t > 0:
     out_hist = [delivered_at(j) for j in range(t)]
@@ -131,14 +138,21 @@ if t > 0:
         "price": p[:t],
         "output": out_hist,
         "revenue": rev_hist,
-        "assets": a[1:t+1],      # end-of-period assets
+        "assets": a[1:t+1],
         "investment": i[:t],
     }
     df = pd.DataFrame(data, index=np.arange(t))
 else:
-    df = pd.DataFrame({"price": [p[0]], "output": [np.nan], "revenue": [np.nan], "assets": [np.nan], "investment": [np.nan]})
+    df = pd.DataFrame({
+        "price": [p[0]],
+        "output": [np.nan],
+        "revenue": [np.nan],
+        "assets": [np.nan],
+        "investment": [np.nan],
+    })
 
 st.dataframe(df, use_container_width=True)
+
 
 # -----------------------------
 # Decision input and advance
@@ -154,6 +168,7 @@ if t < T:
         st.rerun()
 else:
     st.write(f"Final assets: {a[T]:.4f}")
+
 
 # -----------------------------
 # Download
