@@ -1,10 +1,14 @@
-streamlit
-pandas
-numpy
+torch>=2.1
+streamlit>=1.33
+pandas>=2.0
+numpy>=1.24
+scikit-learn>=1.3
+matplotlib>=3.7
 quantecon
 statsmodels
-matplotlib
 plotly>=5.0
 openpyxl   # for .xlsx
 xlrd       # only if you’ll upload legacy .xls
 scikit-learn>=1.4
+
+
