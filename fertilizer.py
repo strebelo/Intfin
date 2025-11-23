@@ -80,7 +80,7 @@ st.sidebar.header("Model parameters")
 P0 = st.sidebar.number_input("Initial fertilizer price P₀ (USD)", value=100.0, min_value=0.0)
 S0 = st.sidebar.number_input("Spot FX S₀ (BRL per USD)", value=5.0, min_value=0.0)
 
-m = st.sidebar.number_input("Gross margin m (e.g., 0.2 = 20%)", value=0.20, min_value=0.0, max_value=5.0)
+m = st.sidebar.number_input("Gross margin m (e.g., 0.10 = 10%)", value=0.12, min_value=0.0, max_value=5.0)
 
 sigma_p = st.sidebar.number_input("Annual volatility of P (σ_p)", value=0.30, min_value=0.0, max_value=5.0)
 sigma_s = st.sidebar.number_input("Annual volatility of S (σ_s)", value=0.20, min_value=0.0, max_value=5.0)
