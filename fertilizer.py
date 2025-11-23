@@ -65,7 +65,7 @@ def main():
                                       value=0.10, min_value=0.0, max_value=5.0)
 
     R_brl = st.sidebar.number_input("BRL interest rate R",
-                                    value=0.10, min_value=-1.0, max_value=5.0)
+                                    value=0.15, min_value=-1.0, max_value=5.0)
     R_usd = st.sidebar.number_input("USD interest rate R*",
                                     value=0.05, min_value=-1.0, max_value=5.0)
 
