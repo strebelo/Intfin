@@ -14,54 +14,24 @@ def forward_rate(S, R_dom, R_for, T):
 
 
 # ----------------------------------
-# Simulation of profit for a given h
+# Simulate price and FX paths once
 # ----------------------------------
-def simulate_profits(
-    h,
-    P0,
-    S0,
-    m,
-    R_usd,
-    sigma_p,
-    sigma_s,
-    T,
-    R_brl=None,
-    N=5000,
-    seed=None
-):
+def simulate_paths(P0, S0, sigma_p, sigma_s, T, N=5000, seed=None):
     """
-    Simulate profits in BRL at t+60 for a hedge ratio h in [0,1].
-    Prices follow lognormal diffusion:
+    Simulate P_{t+T} and S_{t+T} under lognormal dynamics:
 
         log(P_T / P0) ~ N(0, sigma_p^2 * T)
         log(S_T / S0) ~ N(0, sigma_s^2 * T)
-
-    where sigma_p and sigma_s are annual volatilities of log-returns.
     """
     rng = np.random.default_rng(seed)
 
-    # Forward rate
-    if R_brl is not None:
-        F = forward_rate(S0, R_brl, R_usd, T)
-    else:
-        F = S0
-
-    # Draw shocks for log-returns
     eps_p = rng.normal(0.0, 1.0, size=N)
     eps_s = rng.normal(0.0, 1.0, size=N)
 
-    # Geometric Brownian motion (GBM)
     P_T = P0 * np.exp(sigma_p * np.sqrt(T) * eps_p)
     S_T = S0 * np.exp(sigma_s * np.sqrt(T) * eps_s)
 
-    # Revenue in BRL at t+60
-    revenue = (1.0 + m) * P_T * (h * F + (1.0 - h) * S_T)
-
-    # Cost in BRL at t+60 – financed in USD
-    cost = P0 * S0 * (1.0 + R_usd * T)
-
-    profits = revenue - cost
-    return profits
+    return P_T, S_T
 
 
 # =============================
@@ -162,27 +132,46 @@ hedge_grid = np.linspace(0.0, 1.0, 11)
 # -------------------------
 
 if st.button("Run simulation"):
-    profits_unhedged = simulate_profits(
-        h=0.0, P0=P0, S0=S0, m=m,
-        R_usd=R_usd, sigma_p=sigma_p, sigma_s=sigma_s,
-        T=T, R_brl=R_brl, N=int(N), seed=int(seed)
-    )
+    with st.spinner("Running Monte Carlo simulation..."):
+        N_int = int(N)
+        seed_int = int(seed)
 
-    profits_hedged = simulate_profits(
-        h=h_user, P0=P0, S0=S0, m=m,
-        R_usd=R_usd, sigma_p=sigma_p, sigma_s=sigma_s,
-        T=T, R_brl=R_brl, N=int(N), seed=int(seed)+1
-    )
+        # Forward rate (CIP)
+        F = forward_rate(S0, R_brl, R_usd, T)
 
-    def summarize(profits):
-        mean = np.mean(profits)
-        std = np.std(profits, ddof=1)
-        prob_loss = np.mean(profits < 0.0)
-        return mean, std, prob_loss
+        # Simulate paths once
+        P_T, S_T = simulate_paths(
+            P0=P0,
+            S0=S0,
+            sigma_p=sigma_p,
+            sigma_s=sigma_s,
+            T=T,
+            N=N_int,
+            seed=seed_int
+        )
 
-    mean_u, std_u, ploss_u = summarize(profits_unhedged)
-    mean_h, std_h, ploss_h = summarize(profits_hedged)
+        # Cost in BRL (fixed across simulations and hedge ratios)
+        cost = P0 * S0 * (1.0 + R_usd * T)
 
+        # -------------------------
+        # Unhedged and user-picked hedge ratio
+        # -------------------------
+        profits_unhedged = (1.0 + m) * P_T * S_T - cost
+
+        profits_hedged = (1.0 + m) * P_T * (h_user * F + (1.0 - h_user) * S_T) - cost
+
+        def summarize(profits):
+            mean = np.mean(profits)
+            std = np.std(profits, ddof=1)
+            prob_loss = np.mean(profits < 0.0)
+            return mean, std, prob_loss
+
+        mean_u, std_u, ploss_u = summarize(profits_unhedged)
+        mean_h, std_h, ploss_h = summarize(profits_hedged)
+
+    # -------------------------
+    # Summary statistics
+    # -------------------------
     st.subheader("Summary statistics")
 
     col1, col2 = st.columns(2)
@@ -198,7 +187,9 @@ if st.button("Run simulation"):
         st.write(f"Volatility (std dev): {std_h:,.2f}")
         st.write(f"P(profit < 0): {ploss_h:.4f}")
 
+    # -------------------------
     # Histogram
+    # -------------------------
     st.subheader("Distribution of profits")
 
     fig1, ax1 = plt.subplots()
@@ -208,20 +199,20 @@ if st.button("Run simulation"):
     ax1.set_ylabel("Density")
     ax1.legend()
     st.pyplot(fig1)
+    plt.close(fig1)
 
-    # Mean–Volatility trade-off
+    # -------------------------
+    # Mean–volatility trade-off across hedge ratios
+    # -------------------------
     st.subheader("Mean–volatility trade-off across hedge ratios")
 
-    means, vols = [], []
+    # Vectorized computation for all h in hedge_grid using the same paths
+    H = hedge_grid[:, None]  # shape (11, 1)
+    revenue_grid = (1.0 + m) * P_T[None, :] * (H * F + (1.0 - H) * S_T[None, :])
+    profits_grid = revenue_grid - cost
 
-    for h in hedge_grid:
-        prof = simulate_profits(
-            h=h, P0=P0, S0=S0, m=m,
-            R_usd=R_usd, sigma_p=sigma_p, sigma_s=sigma_s,
-            T=T, R_brl=R_brl, N=int(N), seed=int(seed)
-        )
-        means.append(np.mean(prof))
-        vols.append(np.std(prof, ddof=1))
+    means = profits_grid.mean(axis=1)
+    vols = profits_grid.std(axis=1, ddof=1)
 
     fig2, ax2 = plt.subplots()
     ax2.plot(vols, means, marker="o")
@@ -232,6 +223,7 @@ if st.button("Run simulation"):
     ax2.set_xlabel("Profit volatility (std dev)")
     ax2.set_ylabel("Mean profit (BRL)")
     st.pyplot(fig2)
+    plt.close(fig2)
 
 # -------------------------
 # Disclaimer
