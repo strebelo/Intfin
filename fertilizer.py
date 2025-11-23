@@ -1,6 +1,12 @@
 import numpy as np
+
+import matplotlib
+# Use a non-interactive backend so nothing hangs on GUI backends
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
 import streamlit as st
+
 
 # -----------------------------
 # Helper: compute forward via CIP
@@ -34,68 +40,57 @@ def simulate_paths(P0, S0, sigma_p, sigma_s, T, N, seed):
 
 
 def main():
+    st.set_page_config(page_title="Fertilizer FX Hedging", layout="centered")
     st.title("FX Hedging of Fertilizer Sales")
 
-    # -------------------------
-    # Short model explanation (kept minimal)
-    # -------------------------
-    st.markdown(
-        r"""
-A firm buys fertilizer in USD at time \(t\) and sells it in Brazil 60 days later.
-
-- \(P_t\): fertilizer price in USD  
-- \(S_t\): BRL/USD exchange rate  
-- \(m\): gross margin  
-- \(R^{USD}\): USD interest rate  
-- \(R^{BRL}\): BRL interest rate  
-
-If it hedges a fraction \(h\) in a forward at rate \(F\), profit in BRL at \(t+60\) is:
-
-\[
-\Pi = (1+m)P_{t+60}\big( hF + (1-h)S_{t+60} \big)
-      - P_t S_t (1 + R^{USD}T).
-\]
-"""
-    )
+    st.write("✅ App loaded. Adjust parameters in the sidebar and click **Run simulation**.")
 
     # -------------------------
     # Sidebar: Parameters
     # -------------------------
     st.sidebar.header("Model parameters")
 
-    P0 = st.sidebar.number_input("Initial fertilizer price P₀ (USD)", value=100.0, min_value=0.0)
-    S0 = st.sidebar.number_input("Spot FX S₀ (BRL per USD)", value=5.0, min_value=0.0)
+    P0 = st.sidebar.number_input("Initial fertilizer price P₀ (USD)",
+                                 value=100.0, min_value=0.0)
+    S0 = st.sidebar.number_input("Spot FX S₀ (BRL per USD)",
+                                 value=5.0, min_value=0.0)
 
-    m = st.sidebar.number_input("Gross margin m (e.g., 0.10 = 10%)", value=0.12, min_value=0.0, max_value=5.0)
+    m = st.sidebar.number_input("Gross margin m (e.g., 0.10 = 10%)",
+                                value=0.12, min_value=0.0, max_value=5.0)
 
-    sigma_p = st.sidebar.number_input("Annual volatility of log P (σₚ)", value=0.30, min_value=0.0, max_value=5.0)
-    sigma_s = st.sidebar.number_input("Annual volatility of log S (σₛ)", value=0.10, min_value=0.0, max_value=5.0)
+    sigma_p = st.sidebar.number_input("Annual volatility of log P (σₚ)",
+                                      value=0.30, min_value=0.0, max_value=5.0)
+    sigma_s = st.sidebar.number_input("Annual volatility of log S (σₛ)",
+                                      value=0.10, min_value=0.0, max_value=5.0)
 
-    R_brl = st.sidebar.number_input("BRL interest rate R", value=0.10, min_value=-1.0, max_value=5.0)
-    R_usd = st.sidebar.number_input("USD interest rate R*", value=0.05, min_value=-1.0, max_value=5.0)
+    R_brl = st.sidebar.number_input("BRL interest rate R",
+                                    value=0.10, min_value=-1.0, max_value=5.0)
+    R_usd = st.sidebar.number_input("USD interest rate R*",
+                                    value=0.05, min_value=-1.0, max_value=5.0)
 
-    days = st.sidebar.number_input("Horizon (days)", value=60, min_value=1, max_value=365)
+    days = st.sidebar.number_input("Horizon (days)",
+                                   value=60, min_value=1, max_value=365)
     T = days / 360.0
 
-    N = st.sidebar.number_input("Number of simulations", value=5000, min_value=100, max_value=200000, step=100)
-    seed = st.sidebar.number_input("Random seed", value=123, min_value=0, max_value=10_000_000)
+    N = st.sidebar.number_input("Number of simulations",
+                                value=5000, min_value=100, max_value=200000, step=100)
+    seed = st.sidebar.number_input("Random seed",
+                                   value=123, min_value=0, max_value=10_000_000)
 
     h_user = st.sidebar.slider("Hedge ratio h", 0.0, 1.0, 0.5, 0.05)
 
     hedge_grid = np.linspace(0.0, 1.0, 11)
 
-    st.write("Set parameters in the sidebar and click **Run simulation**.")
-
     # -------------------------
     # Run simulation
     # -------------------------
     if st.button("Run simulation"):
-        st.write("Running Monte Carlo simulation...")
+        st.write("▶️ Running Monte Carlo simulation...")
 
         N_int = int(N)
         seed_int = int(seed)
 
-        # Forward rate from CIP
+        # Forward rate via CIP
         F = forward_rate(S0, R_brl, R_usd, T)
 
         # Simulate paths once
@@ -109,13 +104,13 @@ If it hedges a fraction \(h\) in a forward at rate \(F\), profit in BRL at \(t+6
             seed=seed_int
         )
 
-        # Cost in BRL
+        # Cost in BRL (same across paths and hedge ratios)
         cost = P0 * S0 * (1.0 + R_usd * T)
 
-        # Unhedged
+        # Unhedged profits
         profits_unhedged = (1.0 + m) * P_T * S_T - cost
 
-        # User-chosen hedge
+        # User-selected hedge profits
         profits_hedged = (1.0 + m) * P_T * (h_user * F + (1.0 - h_user) * S_T) - cost
 
         def summarize(profits):
@@ -152,7 +147,8 @@ If it hedges a fraction \(h\) in a forward at rate \(F\), profit in BRL at \(t+6
 
         fig1, ax1 = plt.subplots()
         ax1.hist(profits_unhedged, bins=50, alpha=0.6, density=True, label="Unhedged")
-        ax1.hist(profits_hedged, bins=50, alpha=0.6, density=True, label=f"Hedged (h={h_user:.2f})")
+        ax1.hist(profits_hedged, bins=50, alpha=0.6, density=True,
+                 label=f"Hedged (h={h_user:.2f})")
         ax1.set_xlabel("Profit (BRL)")
         ax1.set_ylabel("Density")
         ax1.legend()
@@ -164,7 +160,6 @@ If it hedges a fraction \(h\) in a forward at rate \(F\), profit in BRL at \(t+6
         # -------------------------
         st.subheader("Mean–volatility trade-off across hedge ratios")
 
-        # Broadcast across hedge_grid using the same paths
         H = hedge_grid[:, None]  # shape (11, 1)
         revenue_grid = (1.0 + m) * P_T[None, :] * (H * F + (1.0 - H) * S_T[None, :])
         profits_grid = revenue_grid - cost
@@ -176,13 +171,16 @@ If it hedges a fraction \(h\) in a forward at rate \(F\), profit in BRL at \(t+6
         ax2.plot(vols, means, marker="o")
 
         for h, x, y in zip(hedge_grid, vols, means):
-            ax2.annotate(f"h={h:.1f}", (x, y), xytext=(5, 5),
-                         textcoords="offset points", fontsize=8)
+            ax2.annotate(f"h={h:.1f}", (x, y),
+                         xytext=(5, 5), textcoords="offset points", fontsize=8)
 
         ax2.set_xlabel("Profit volatility (std dev)")
         ax2.set_ylabel("Mean profit (BRL)")
         st.pyplot(fig2)
         plt.close(fig2)
+
+        st.write("✅ Simulation finished.")
+
 
     # -------------------------
     # Disclaimer
