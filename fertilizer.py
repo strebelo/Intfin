@@ -89,4 +89,108 @@ def main():
 
     P0 = st.sidebar.number_input("Initial fertilizer price P₀ (USD)",
                                  value=100.0, min_value=0.0)
-    S0 = st.sidebar.numbe
+    S0 = st.sidebar.number_input("Spot FX S₀ (BRL per USD)",
+                                 value=5.0, min_value=0.0)
+
+    m = st.sidebar.number_input("Gross margin m (e.g., 0.10 = 10%)",
+                                value=0.12, min_value=0.0, max_value=5.0)
+
+    sigma_p = st.sidebar.number_input("Annual volatility of log P (σₚ)",
+                                      value=0.30, min_value=0.0, max_value=5.0)
+    sigma_s = st.sidebar.number_input("Annual volatility of log S (σₛ)",
+                                      value=0.10, min_value=0.0, max_value=5.0)
+
+    R_brl = st.sidebar.number_input("BRL interest rate R",
+                                    value=0.15, min_value=-1.0, max_value=5.0)
+    R_usd = st.sidebar.number_input("USD interest rate R*",
+                                    value=0.05, min_value=-1.0, max_value=5.0)
+
+    days = st.sidebar.number_input("Horizon (days)",
+                                   value=60, min_value=1, max_value=365)
+    T = days / 360.0
+
+    N = st.sidebar.number_input("Number of simulations",
+                                value=5000, min_value=100, max_value=200000, step=100)
+    seed = st.sidebar.number_input("Random seed",
+                                   value=123, min_value=0, max_value=10_000_000)
+
+    h_user = st.sidebar.slider("Hedge ratio h", 0.0, 1.0, 0.5, 0.05)
+
+    # *** NEW: choose how the sale price is indexed ***
+    price_mode = st.sidebar.radio(
+        "Sale price indexation",
+        options=["Terminal price P(T)", "Average price over [t, t+T]"],
+        index=0,
+    )
+
+    hedge_grid = np.linspace(0.0, 1.0, 11)
+
+    # -------------------------
+    # Run simulation
+    # -------------------------
+    if st.button("Run simulation"):
+        st.write("▶️ Running Monte Carlo simulation...")
+
+        N_int = int(N)
+        seed_int = int(seed)
+
+        # Forward rate via CIP
+        F = forward_rate(S0, R_brl, R_usd, T)
+
+        # --- Simulate according to chosen price mode ---
+        if price_mode == "Terminal price P(T)":
+            P_T, S_T = simulate_paths_terminal(
+                P0=P0,
+                S0=S0,
+                sigma_p=sigma_p,
+                sigma_s=sigma_s,
+                T=T,
+                N=N_int,
+                seed=seed_int,
+            )
+            P_sale = P_T  # sale price uses terminal P_T
+        else:
+            P_T, P_avg, S_T = simulate_paths_with_avg(
+                P0=P0,
+                S0=S0,
+                sigma_p=sigma_p,
+                sigma_s=sigma_s,
+                T=T,
+                days=days,
+                N=N_int,
+                seed=seed_int,
+            )
+            P_sale = P_avg  # sale price uses average price
+
+        # Cost in BRL (same across paths and hedge ratios), financed at BRL rate
+        cost = P0 * S0 * (1.0 + R_brl * T)
+
+        # Unhedged profits: revenue uses P_sale and S_T
+        profits_unhedged = (1.0 + m) * P_sale * S_T - cost
+
+        # User-selected hedge profits
+        profits_hedged = (1.0 + m) * P_sale * (h_user * F + (1.0 - h_user) * S_T) - cost
+
+        def summarize(profits):
+            mean = np.mean(profits)
+            std = np.std(profits, ddof=1)
+            prob_loss = np.mean(profits < 0.0)
+            return mean, std, prob_loss
+
+        mean_u, std_u, ploss_u = summarize(profits_unhedged)
+        mean_h, std_h, ploss_h = summarize(profits_hedged)
+
+        # -------------------------
+        # Summary statistics
+        # -------------------------
+        st.subheader("Summary statistics")
+
+        pricing_label = "terminal price P(T)" if price_mode == "Terminal price P(T)" else "average price over the period"
+
+        st.markdown(f"*Sale price indexed to **{pricing_label}***")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**Unhedged (h = 0)**")
+            st.write(f"Mean profit (BRL): {mean_u:,.2f}")
+            st.write(f"Volatility (std dev, B
