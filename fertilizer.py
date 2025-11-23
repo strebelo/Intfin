@@ -15,6 +15,7 @@ def forward_rate(S, R_dom, R_for, T):
     """
     Covered interest parity with simple interest:
     F = S * (1 + R_dom * T) / (1 + R_for * T)
+    where R_dom is the BRL rate and R_for is the USD rate.
     """
     return S * (1.0 + R_dom * T) / (1.0 + R_for * T)
 
@@ -104,8 +105,8 @@ def main():
             seed=seed_int
         )
 
-        # Cost in BRL (same across paths and hedge ratios)
-        cost = P0 * S0 * (1.0 + R_usd * T)
+        # Cost in BRL (same across paths and hedge ratios), financed at BRL rate
+        cost = P0 * S0 * (1.0 + R_brl * T)
 
         # Unhedged profits
         profits_unhedged = (1.0 + m) * P_T * S_T - cost
@@ -131,13 +132,13 @@ def main():
         with col1:
             st.markdown("**Unhedged (h = 0)**")
             st.write(f"Mean profit (BRL): {mean_u:,.2f}")
-            st.write(f"Volatility (std dev): {std_u:,.2f}")
+            st.write(f"Volatility (std dev, BRL): {std_u:,.2f}")
             st.write(f"P(profit < 0): {ploss_u:.4f}")
 
         with col2:
             st.markdown(f"**Hedged (h = {h_user:.2f})**")
             st.write(f"Mean profit (BRL): {mean_h:,.2f}")
-            st.write(f"Volatility (std dev): {std_h:,.2f}")
+            st.write(f"Volatility (std dev, BRL): {std_h:,.2f}")
             st.write(f"P(profit < 0): {ploss_h:.4f}")
 
         # -------------------------
@@ -174,13 +175,12 @@ def main():
             ax2.annotate(f"h={h:.1f}", (x, y),
                          xytext=(5, 5), textcoords="offset points", fontsize=8)
 
-        ax2.set_xlabel("Profit volatility (std dev)")
+        ax2.set_xlabel("Profit volatility (std dev, BRL)")
         ax2.set_ylabel("Mean profit (BRL)")
         st.pyplot(fig2)
         plt.close(fig2)
 
         st.write("✅ Simulation finished.")
-
 
     # -------------------------
     # Disclaimer
