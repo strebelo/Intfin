@@ -4,19 +4,30 @@ import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 
-st.set_page_config(page_title="Exchange Rate Forecasting", layout="wide")
+st.set_page_config(page_title="Structured FX Forecasting (RER Mean Reversion)", layout="wide")
 
-st.title("Monthly Spot Exchange Rate Forecasts (Random Walk vs RER-Augmented Model)")
+st.title("Nominal Exchange Rate Forecasts Exploiting RER Mean Reversion")
 
 st.markdown(
-    """
-This app:
-1. Reads an Excel file with **Date**, **Spot**, and **Real Exchange Rate (RER)** (in the first three columns).  
-2. Estimates, recursively over time, a model of the form  
-   \\( \Delta S_t = \phi \cdot \frac{\text{RER}_{t-1}}{\overline{\text{RER}}_{1:t-1}} + \varepsilon_t \\).  
-3. Uses \\( \hat\phi_t \\) at each date to forecast the spot rate up to **5 years ahead (60 months)**.  
-4. Compares out-of-sample **RMSFE** of this model against a simple **random walk** at multiple horizons.  
-5. Plots the forecast paths from any chosen origin date.
+    r"""
+This app implements a **structural-style forecasting approach**:
+
+1. It reads an Excel file with **Date**, **Spot**, and **Real Exchange Rate (RER)** in the first three columns.  
+2. It defines (in logs) the nominal rate \( s_t \), the real exchange rate \( q_t \), and the implied price-differential \( d_t = s_t - q_t \).  
+3. It estimates, **recursively and out-of-sample**, for each forecast origin \( t \):
+   - A **mean-reverting AR(1)** for the RER,
+   - A **random walk with drift** for \( d_t \),
+   - Then constructs \( h \)-step forecasts of the nominal rate using  
+     \[
+     \hat s_{t+h|t}^{\text{struct}} = \mathbb{E}_t[q_{t+h}] + \mathbb{E}_t[d_{t+h}].
+     \]
+4. It compares out-of-sample **RMSFE** of this structured model with a **random walk** benchmark:
+   \[
+   \hat s_{t+h|t}^{\text{RW}} = s_t.
+   \]
+5. You can visualize forecast paths from any chosen origin date.
+
+All estimation at a given origin uses **only data up to that origin** (no look-ahead bias).
 """
 )
 
@@ -24,17 +35,17 @@ This app:
 st.sidebar.header("Settings")
 
 uploaded_file = st.sidebar.file_uploader(
-    "Upload Excel file (Date in col 1, Spot in col 2, RER in col 3)", 
+    "Upload Excel file (Date in col 1, Spot in col 2, RER in col 3)",
     type=["xlsx", "xls"]
 )
 
 min_window = st.sidebar.number_input(
     "Minimum estimation window (months)",
-    min_value=24,
+    min_value=36,
     max_value=240,
     value=60,
     step=6,
-    help="Number of initial observations used before starting recursive estimation."
+    help="Number of initial observations used before starting recursive out-of-sample forecasts."
 )
 
 default_horizons = [1, 3, 6, 12, 24, 36, 60]
@@ -44,10 +55,18 @@ horizon_str = st.sidebar.text_input(
     help="Horizons at which RMSFE is computed (max 60 months)."
 )
 
-use_logs = st.sidebar.checkbox(
-    "Use log(spot) in place of levels", 
-    value=False,
-    help="If checked, modeling and forecasts are done on log spot rates."
+MAX_H = 60  # 5 years
+
+use_log_spot = st.sidebar.checkbox(
+    "Use log(spot) (recommended)",
+    value=True,
+    help="If checked, models and forecasts are built on log spot rates."
+)
+
+use_log_rer = st.sidebar.checkbox(
+    "Use log(RER) if positive",
+    value=True,
+    help="If checked and RER>0, mean reversion is estimated on log(RER)."
 )
 
 # Parse horizons
@@ -62,8 +81,6 @@ def parse_horizons(hstr):
 horizons = parse_horizons(horizon_str)
 if not horizons:
     horizons = default_horizons
-
-MAX_H = 60  # 5 years
 
 if uploaded_file is None:
     st.info("Upload an Excel file in the sidebar to begin.")
@@ -87,33 +104,40 @@ df.columns = ["date", "spot", "rer"]
 try:
     df["date"] = pd.to_datetime(df["date"])
 except Exception as e:
-    st.error(f"Could not parse dates in the first column: {e}")
+    st.error(f"Could not parse dates in the first column as dates: {e}")
     st.stop()
 
 df = df.sort_values("date").dropna(subset=["spot", "rer"])
 df.set_index("date", inplace=True)
 
-if df.empty or len(df) < min_window + MAX_H:
+if len(df) < min_window + MAX_H:
     st.warning(
-        f"Not enough data. You have {len(df)} monthly observations. "
-        f"You requested a minimum estimation window of {min_window} and up to "
-        f"{MAX_H} months ahead for forecasts. Consider reducing the window size."
+        f"You have {len(df)} observations. With a minimum window of {min_window} "
+        f"and a max horizon of {MAX_H} months, out-of-sample evaluation may be limited."
     )
 
-# Optionally log-transform spot
-if use_logs:
-    df["spot_trans"] = np.log(df["spot"].astype(float))
-else:
-    df["spot_trans"] = df["spot"].astype(float)
-
+# --- Transformations: logs and series definitions ---
+df["spot"] = df["spot"].astype(float)
 df["rer"] = df["rer"].astype(float)
 
-# Compute ratio RER_t / avg_RER_1:t
-df["avg_rer"] = df["rer"].expanding().mean()
-df["ratio"] = df["rer"] / df["avg_rer"]
+# Log spot
+if use_log_spot:
+    df["s"] = np.log(df["spot"])
+else:
+    df["s"] = df["spot"]
 
-# Compute ΔS_t
-df["dS"] = df["spot_trans"].diff()
+# RER for q_t
+if use_log_rer:
+    if (df["rer"] <= 0).any():
+        st.warning("RER has non-positive values; using RER levels (no log) for mean-reversion.")
+        df["q"] = df["rer"]
+    else:
+        df["q"] = np.log(df["rer"])
+else:
+    df["q"] = df["rer"]
+
+# Price differential proxy: d_t = s_t - q_t
+df["d"] = df["s"] - df["q"]
 
 n = len(df)
 dates = df.index
@@ -122,114 +146,144 @@ st.subheader("Data Overview")
 st.write(f"Number of monthly observations: **{n}**")
 st.dataframe(df[["spot", "rer"]].tail())
 
-st.line_chart(df[["spot", "rer"]])
+# Separate plots for spot and RER
+col1, col2 = st.columns(2)
+with col1:
+    st.markdown("**Spot exchange rate (levels)**")
+    st.line_chart(df["spot"])
+with col2:
+    st.markdown("**Real exchange rate (RER)**")
+    st.line_chart(df["rer"])
 
-# --- Recursive estimation and forecast errors ---
-# Storage
-phi_hat = pd.Series(index=dates, dtype=float)
-errors_model = {h: [] for h in horizons}
+# --- Helper: RER AR(1) forecast and d_t drift forecast ---
+def forecast_structural(origin_idx, h):
+    """
+    Build h-step-ahead structural forecast for s at origin index origin_idx,
+    using only data up to origin_idx (inclusive).
+    Returns float s_hat_struct.
+    """
+    # Data up to origin
+    q_hist = df["q"].iloc[:origin_idx + 1].values  # indices 0..origin_idx
+    d_hist = df["d"].iloc[:origin_idx + 1].values
+
+    # Need at least 2 points to estimate AR(1) and drift; checked earlier via min_window
+    # --- RER AR(1): q_t = alpha + rho q_{t-1} + u_t ---
+    y_q = q_hist[1:]          # q_1..q_origin
+    x_q = q_hist[:-1]         # q_0..q_{origin-1}
+    X_q = sm.add_constant(x_q)
+    ar_model = sm.OLS(y_q, X_q).fit()
+    alpha_hat, rho_hat = ar_model.params
+
+    # Long-run mean of q_t
+    if abs(1 - rho_hat) > 1e-4 and abs(rho_hat) < 1.5:
+        mu_hat = alpha_hat / (1 - rho_hat)
+    else:
+        # Fallback: sample mean
+        mu_hat = np.mean(q_hist)
+
+    q_t = q_hist[-1]
+    # h-step forecast for q
+    q_fore = mu_hat + (rho_hat ** h) * (q_t - mu_hat)
+
+    # --- d_t random walk with drift: Δd_t = kappa + e_t ---
+    d_t = d_hist[-1]
+    d_diff = np.diff(d_hist)  # Δd_1 .. Δd_origin
+    if len(d_diff) > 0:
+        kappa_hat = np.mean(d_diff)
+    else:
+        kappa_hat = 0.0
+
+    d_fore = d_t + h * kappa_hat
+
+    # s_fore = q_fore + d_fore
+    return q_fore + d_fore
+
+# --- Out-of-sample evaluation ---
+errors_struct = {h: [] for h in horizons}
 errors_rw = {h: [] for h in horizons}
-
 origins_used = []
 
-# Main recursive loop
-for origin_idx in range(min_window, n - 1):  # origin at index origin_idx
-    # Regression sample: up to origin_idx (inclusive)
-    # y_t = ΔS_t for t = 1..origin_idx
-    # x_t = ratio_{t-1} for t = 1..origin_idx  (lagged ratio)
-    y = df["dS"].iloc[1:origin_idx + 1]       # positions 1..origin_idx
-    x = df["ratio"].iloc[0:origin_idx]        # positions 0..origin_idx-1
-
-    # Align indices
-    y, x = y.align(x, join="inner")
-
-    if len(y) < min_window:
-        continue
-
-    X = sm.add_constant(x.values)
-    model = sm.OLS(y.values, X).fit()
-    phi = model.params[1]  # coefficient on ratio
-    phi_hat.iloc[origin_idx] = phi
-
-    S_origin = df["spot_trans"].iloc[origin_idx]
-    ratio_origin = df["ratio"].iloc[origin_idx]
+for origin_idx in range(min_window, n - 1):  # leave at least 1 obs after origin
     origins_used.append(origin_idx)
+    s_origin = df["s"].iloc[origin_idx]
 
-    # Forecast errors for each horizon
     for h in horizons:
         if origin_idx + h >= n:
             continue
-        S_actual = df["spot_trans"].iloc[origin_idx + h]
 
-        # RER-augmented model: S_t+h|t = S_t + h * phi_hat_t * ratio_t
-        S_hat_model = S_origin + h * phi * ratio_origin
+        s_actual = df["s"].iloc[origin_idx + h]
 
-        # Random walk: S_t+h|t = S_t
-        S_hat_rw = S_origin
+        # Structural forecast: uses data up to origin_idx only (inside function)
+        s_hat_struct = forecast_structural(origin_idx, h)
 
-        errors_model[h].append(S_actual - S_hat_model)
-        errors_rw[h].append(S_actual - S_hat_rw)
+        # Random walk forecast
+        s_hat_rw = s_origin
+
+        errors_struct[h].append(s_actual - s_hat_struct)
+        errors_rw[h].append(s_actual - s_hat_rw)
 
 origins_used = np.array(origins_used)
 if len(origins_used) == 0:
-    st.error("Could not perform recursive estimation. Check the window size or data length.")
+    st.error("Could not perform recursive out-of-sample evaluation. Check the window size or data length.")
     st.stop()
 
 # --- RMSFE comparison ---
+st.subheader("Out-of-Sample Forecast Performance (Structured vs Random Walk)")
+
 results = []
 for h in horizons:
-    em = np.array(errors_model[h], dtype=float)
+    es = np.array(errors_struct[h], dtype=float)
     er = np.array(errors_rw[h], dtype=float)
-    if len(em) == 0 or len(er) == 0:
+    if len(es) == 0 or len(er) == 0:
         continue
-    rmsfe_model = np.sqrt(np.mean(em**2))
+    rmsfe_struct = np.sqrt(np.mean(es**2))
     rmsfe_rw = np.sqrt(np.mean(er**2))
-    rel = (rmsfe_model / rmsfe_rw) if rmsfe_rw > 0 else np.nan
+    rel = (rmsfe_struct / rmsfe_rw) if rmsfe_rw > 0 else np.nan
     results.append(
         {
             "Horizon (months)": h,
-            "RMSFE - RER model": rmsfe_model,
+            "RMSFE - Structured model": rmsfe_struct,
             "RMSFE - Random walk": rmsfe_rw,
-            "Ratio (RER / RW)": rel,
+            "Ratio (Struct / RW)": rel,
             "Improvement (%)": (1 - rel) * 100 if np.isfinite(rel) else np.nan,
         }
     )
 
-st.subheader("Out-of-Sample Forecast Performance")
-
 if results:
     res_df = pd.DataFrame(results).set_index("Horizon (months)")
-    st.dataframe(res_df.style.format({
-        "RMSFE - RER model": "{:.6f}",
-        "RMSFE - Random walk": "{:.6f}",
-        "Ratio (RER / RW)": "{:.3f}",
-        "Improvement (%)": "{:+.1f}"
-    }))
+    st.dataframe(
+        res_df.style.format({
+            "RMSFE - Structured model": "{:.6f}",
+            "RMSFE - Random walk": "{:.6f}",
+            "Ratio (Struct / RW)": "{:.3f}",
+            "Improvement (%)": "{:+.1f}"
+        })
+    )
 else:
     st.warning("No valid forecast errors were computed for the chosen horizons.")
 
 # --- Forecast paths from a selected origin date ---
 st.subheader("Forecast Paths from Selected Origin Date")
 
-# Only allow origins where phi_hat is available
-valid_phi = phi_hat.dropna()
-if valid_phi.empty:
-    st.warning("No valid φ estimates to plot forecast paths.")
-    st.stop()
+# Choose a reasonable default origin: max(last-60, min_window)
+if n > (min_window + MAX_H):
+    default_idx = n - MAX_H - 1
+    if default_idx < min_window:
+        default_idx = min_window
+else:
+    default_idx = min_window
 
-origin_date_default = valid_phi.index[-MAX_H] if len(valid_phi) > MAX_H else valid_phi.index[-1]
+origin_date_default = dates[default_idx]
 
 origin_date = st.selectbox(
     "Choose forecast origin date",
-    options=list(valid_phi.index),
-    index=list(valid_phi.index).index(origin_date_default),
+    options=list(dates[min_window:-1]),
+    index=list(dates[min_window:-1]).index(origin_date_default),
     format_func=lambda d: d.strftime("%Y-%m")
 )
 
 origin_idx = df.index.get_loc(origin_date)
-phi0 = phi_hat.iloc[origin_idx]
-ratio0 = df["ratio"].iloc[origin_idx]
-S0 = df["spot_trans"].iloc[origin_idx]
+s0 = df["s"].iloc[origin_idx]
 
 freq = pd.infer_freq(df.index)
 if freq is None:
@@ -238,34 +292,40 @@ if freq is None:
 forecast_index = pd.date_range(start=origin_date, periods=MAX_H + 1, freq=freq)
 
 # Build forecast paths
-model_forecast = []
+struct_forecast = []
 rw_forecast = []
+
 for h in range(0, MAX_H + 1):
-    model_forecast.append(S0 + h * phi0 * ratio0)
-    rw_forecast.append(S0)
+    if h == 0:
+        struct_forecast.append(s0)
+        rw_forecast.append(s0)
+    else:
+        struct_forecast.append(forecast_structural(origin_idx, h))
+        rw_forecast.append(s0)
 
 fc_df = pd.DataFrame(
     {
-        "Model (with RER)": model_forecast,
+        "Structured model": struct_forecast,
         "Random walk": rw_forecast,
     },
     index=forecast_index,
 )
 
-# Bring back to levels if using logs
-if use_logs:
-    fc_df = np.exp(fc_df)
+# Convert forecasts to levels for plotting
+if use_log_spot:
+    fc_plot = np.exp(fc_df)
     spot_plot = df["spot"]
 else:
-    spot_plot = df["spot_trans"]
+    fc_plot = fc_df
+    spot_plot = df["s"]
 
-# Merge actuals and forecasts for plotting
-combined = pd.DataFrame(index=spot_plot.index.union(fc_df.index))
+# Merge actuals and forecasts
+combined = pd.DataFrame(index=spot_plot.index.union(fc_plot.index))
 combined["Actual spot"] = spot_plot
-combined["Model (with RER)"] = fc_df["Model (with RER)"]
-combined["Random walk"] = fc_df["Random walk"]
+combined["Structured model"] = fc_plot["Structured model"]
+combined["Random walk"] = fc_plot["Random walk"]
 
-# Restrict to a window around the origin (e.g. 5 years before and 5 years after)
+# Plot a 5-year window around the origin
 plot_start = max(combined.index[0], origin_date - pd.DateOffset(years=5))
 plot_end = min(combined.index[-1], origin_date + pd.DateOffset(years=5))
 combined_window = combined.loc[plot_start:plot_end]
@@ -273,13 +333,14 @@ combined_window = combined.loc[plot_start:plot_end]
 st.line_chart(combined_window)
 
 st.markdown(
-    """
-**Interpretation tips:**
-- The **table** shows whether adding the RER term improves out-of-sample RMSFE relative to a pure random walk at each horizon
-  (negative “Improvement (%)” means the RER model is worse).
-- The **plot** shows, for the chosen origin date:
-  - The realized spot rate.
-  - The 5-year forecast path from the random walk.
-  - The 5-year forecast path from the RER-augmented model.
+    r"""
+**Interpretation:**
+
+- The **structured model** exploits the **mean reversion of the RER** plus a **drifting price differential**:
+  - When the RER is very depreciated relative to its long-run mean, the AR(1) pulls its forecast back, generating an expected **appreciation** of the nominal rate.
+  - The drift in \( d_t \) captures **systematic inflation differentials** (PPP drift).
+- The **random walk** ignores these forces and simply keeps \( s_t \) flat in expectation.
+
+If the real exchange rate truly is mean-reverting and inflation differentials are persistent, you should see **gains at medium-to-long horizons** (e.g., 2–5 years) in the RMSFE table.
 """
 )
