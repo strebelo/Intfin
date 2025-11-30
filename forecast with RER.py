@@ -131,6 +131,42 @@ def compute_structural_forecast(df_log, origin_idx, h, cpi_window_months=60):
     return q_hat_h + c_hat_h
 
 
+def estimate_ar1_params_for_origin(df_log, origin_idx, cpi_window_months=60):
+    """
+    For a given origin_idx, estimate the AR(1) with constant for:
+      - q_t (log RER) using full history up to origin_idx
+      - c_t (log CPI ratio) using last cpi_window_months up to origin_idx
+
+    Returns a dict with alpha, rho, and implied mean for q_t.
+    """
+    # RER AR(1) on full history
+    q_hist = df_log["q"].iloc[:origin_idx + 1].values
+    _, alpha_q, rho_q = ar1_forecast_multi_step(q_hist, h=1)  # h just for forecast; params are same
+
+    # Implied long-run mean of q_t if |rho| < 1
+    if abs(1 - rho_q) > 1e-4 and abs(rho_q) < 1.5:
+        mu_q = alpha_q / (1 - rho_q)
+    else:
+        mu_q = np.mean(q_hist)
+
+    # CPI ratio AR(1) on last cpi_window_months
+    c_hist_full = df_log["c"].iloc[:origin_idx + 1].values
+    if len(c_hist_full) > cpi_window_months:
+        c_hist = c_hist_full[-cpi_window_months:]
+    else:
+        c_hist = c_hist_full
+    _, alpha_c, rho_c = ar1_forecast_multi_step(c_hist, h=1)
+
+    return {
+        "alpha_q": alpha_q,
+        "rho_q": rho_q,
+        "mu_q": mu_q,
+        "alpha_c": alpha_c,
+        "rho_c": rho_c,
+        "n_q": len(q_hist),
+        "n_c": len(c_hist),
+    }
+
 # ---------------------------
 # Main logic
 # ---------------------------
@@ -297,6 +333,36 @@ origin_date = st.selectbox(
 
 origin_idx = df_log.index.get_loc(origin_date)
 s0 = df_log["s"].iloc[origin_idx]
+
+# --- Show AR(1) parameters at selected origin ---
+params = estimate_ar1_params_for_origin(
+    df_log, origin_idx, cpi_window_months=CPI_WINDOW_MONTHS
+)
+
+st.markdown("**AR(1) parameters at selected origin**")
+params_df = pd.DataFrame(
+    {
+        "Parameter": [
+            "α (RER)", "ρ (RER)", "Implied mean of q", "α (CPI ratio)", "ρ (CPI ratio)",
+            "Obs used for RER", "Obs used for CPI ratio"
+        ],
+        "Value": [
+            params["alpha_q"],
+            params["rho_q"],
+            params["mu_q"],
+            params["alpha_c"],
+            params["rho_c"],
+            params["n_q"],
+            params["n_c"],
+        ]
+    }
+)
+st.table(params_df.style.format(
+    {
+        "Value": "{:.6f}"
+    },
+    subset=pd.IndexSlice[0:4, "Value"]
+))
 
 freq = pd.infer_freq(df_log.index)
 if freq is None:
