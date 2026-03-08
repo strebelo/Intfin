@@ -172,35 +172,50 @@ st.write("AIC:", model.aic)
 st.write("BIC:", model.bic)
 
 # ----------------------------------
-# Plot probabilities
+# Plot probabilities over time
 # ----------------------------------
 
-st.header("Vintage prediction plot")
+st.header("Predicted probabilities over time")
 
 plot_df = year_df.copy()
-plot_df["prob"] = probs * 100   # convert to percent
+plot_df["prob"] = probs
+plot_df["actual"] = y
 
-# keep only declared vintages
-declared = plot_df[plot_df["vintage"] > 0]
+# declared vintages only
+declared = plot_df[plot_df["actual"] == 1].copy()
 
-fig, ax = plt.subplots()
+fig, ax = plt.subplots(figsize=(12, 6))
 
-# 50% decision line
-ax.axhline(50, color="blue", linestyle="--", label="50% probability")
+# blue line: fitted logit probabilities by year
+ax.plot(
+    plot_df["year"],
+    plot_df["prob"],
+    linewidth=2.5,
+    label="Predicted probability"
+)
 
-# red dots for declared vintages
-ax.scatter(declared["prob"], [50]*len(declared),
-           color="red", s=80, label="Declared vintages")
+# dashed line at 50%
+ax.axhline(
+    0.5,
+    linestyle="--",
+    linewidth=2,
+    label="50% threshold"
+)
 
-# label vintages
-for _, row in declared.iterrows():
-    ax.text(row["prob"], 50, str(int(row["year"])),
-            fontsize=8, ha="center", va="bottom")
+# red dots only for declared vintages, at their predicted probabilities
+ax.scatter(
+    declared["year"],
+    declared["prob"],
+    color="red",
+    s=90,
+    zorder=3,
+    label="Declared vintage"
+)
 
-ax.set_xlabel("Predicted Probability of Vintage (%)")
-ax.set_ylabel("Decision Threshold")
-ax.set_title("Logit Model Predictions")
-
+ax.set_xlabel("Year")
+ax.set_ylabel("Probability of Vintage")
+ax.set_title("Predicted Probability of Classic Port Vintages")
+ax.set_ylim(0, 1)
 ax.legend()
 
 st.pyplot(fig)
