@@ -1,359 +1,190 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 from sklearn.metrics import roc_auc_score, brier_score_loss, precision_score, recall_score
-from sklearn.model_selection import LeaveOneOut
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
 
-# ============================================================
-# USER SETTINGS
-# ============================================================
+st.title("Port Vintage Logit Model")
 
-FILE_PATH = "Data Vintages.xlsx"   # change if needed
-SHEET_NAME = "Data"
+st.write("""
+This app estimates logistic regressions predicting whether a year is a classic vintage.
+Upload the Excel file with monthly data containing these columns:
 
-# Default model choice:
-# "best_logit" is the recommended default
-MODEL_NAME = "best_logit"
+- year
+- month
+- tmax
+- tmin
+- rain
+- vintage
 
-# Other built-in options:
-# "baseline_sep_rain"
-# "monthly_rain"
-# "jul_aug_split"
-# "interaction_model"
-# "huglin_model"
-# "random_forest"
+where vintage = 1 for classic vintage years and 0 otherwise.
+""")
 
-BASE_TEMP_GDD = 10.0
-CLASSIFICATION_THRESHOLD = 0.50
+uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
 
-# ============================================================
-# LOAD AND CLEAN DATA
-# ============================================================
+if uploaded_file is not None:
+    # -----------------------------
+    # Load data
+    # -----------------------------
+    df = pd.read_excel(uploaded_file)
+    df.columns = [c.strip().lower() for c in df.columns]
 
-df = pd.read_excel(FILE_PATH, sheet_name=SHEET_NAME)
+    required_cols = ["year", "month", "tmax", "tmin", "rain", "vintage"]
+    missing = [c for c in required_cols if c not in df.columns]
 
-# Standardize column names
-df.columns = [str(c).strip().lower() for c in df.columns]
+    if missing:
+        st.error(f"Missing required columns: {missing}")
+        st.stop()
 
-# Keep only needed columns
-needed = ["year", "month", "tmax", "tmin", "rain", "days_obs", "vintage"]
-df = df[[c for c in needed if c in df.columns]].copy()
+    for c in required_cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
 
-# Convert to numeric
-for c in ["year", "month", "tmax", "tmin", "rain", "days_obs", "vintage"]:
-    df[c] = pd.to_numeric(df[c], errors="coerce")
+    # Replace common missing-value codes
+    df.loc[df["rain"] <= -99, "rain"] = np.nan
+    df.loc[df["tmax"] <= -99, "tmax"] = np.nan
+    df.loc[df["tmin"] <= -99, "tmin"] = np.nan
 
-# Treat sentinel missing values as NaN
-df.loc[df["rain"] <= -99, "rain"] = np.nan
-df.loc[df["tmax"] <= -99, "tmax"] = np.nan
-df.loc[df["tmin"] <= -99, "tmin"] = np.nan
+    # -----------------------------
+    # Construct monthly variables
+    # -----------------------------
+    df["tmean"] = (df["tmax"] + df["tmin"]) / 2
+    df["gdd_month"] = np.maximum(df["tmean"] - 10, 0)
 
-# Monthly mean temperature
-df["tmean"] = (df["tmax"] + df["tmin"]) / 2.0
-
-# Growing degree days by month (base 10C)
-df["gdd_month"] = np.maximum(df["tmean"] - BASE_TEMP_GDD, 0.0)
-
-# Huglin monthly contribution (simple monthly approximation)
-# HI_month = ((Tmean - 10) + (Tmax - 10))/2, floored at 0
-df["huglin_month"] = np.maximum(((df["tmean"] - 10.0) + (df["tmax"] - 10.0)) / 2.0, 0.0)
-
-# ============================================================
-# FEATURE ENGINEERING
-# ============================================================
-
-def yearly_features(monthly_df: pd.DataFrame) -> pd.DataFrame:
+    # -----------------------------
+    # Build yearly dataset
+    # -----------------------------
     rows = []
-
-    years = sorted(monthly_df["year"].dropna().astype(int).unique())
+    years = sorted(df["year"].dropna().unique())
 
     for y in years:
-        d = monthly_df[monthly_df["year"] == y].copy()
+        d = df[df["year"] == y].copy()
+        prev = df[df["year"] == y - 1].copy()
 
-        # Annual outcome: assume vintage is constant within year
         vintage_vals = d["vintage"].dropna().unique()
-        vintage = int(vintage_vals[0]) if len(vintage_vals) > 0 else np.nan
-
-        # Core variables
-        gdd_apr_sep = d.loc[d["month"].between(4, 9), "gdd_month"].sum(skipna=True)
-        huglin_apr_sep = d.loc[d["month"].between(4, 9), "huglin_month"].sum(skipna=True)
-
-        rain_sep = d.loc[d["month"] == 9, "rain"].sum(skipna=True)
-        rain_apr = d.loc[d["month"] == 4, "rain"].sum(skipna=True)
-        rain_may = d.loc[d["month"] == 5, "rain"].sum(skipna=True)
-        rain_jun = d.loc[d["month"] == 6, "rain"].sum(skipna=True)
-        rain_apr_jun = d.loc[d["month"].between(4, 6), "rain"].sum(skipna=True)
-
-        rain_jul_aug = d.loc[d["month"].between(7, 8), "rain"].sum(skipna=True)
-
-        temp_jul = d.loc[d["month"] == 7, "tmean"].mean(skipna=True)
-        temp_aug = d.loc[d["month"] == 8, "tmean"].mean(skipna=True)
-        temp_jul_aug = d.loc[d["month"].between(7, 8), "tmean"].mean(skipna=True)
-
-        # Cool night index proxy: September minimum temperature
-        cool_night_sep = d.loc[d["month"] == 9, "tmin"].mean(skipna=True)
-
-        # Extreme heat counts (optional)
-        days_gt_35 = d.loc[d["month"].between(7, 8) & (d["tmax"] > 35), "month"].count()
-
-        # Winter rain: Oct-Dec of previous year + Jan-Feb of current year
-        prev = monthly_df[monthly_df["year"] == (y - 1)].copy()
-        rain_oct_feb = (
-            prev.loc[prev["month"].between(10, 12), "rain"].sum(skipna=True)
-            + d.loc[d["month"].between(1, 2), "rain"].sum(skipna=True)
-        )
+        if len(vintage_vals) == 0:
+            continue
 
         rows.append({
-            "year": y,
-            "vintage": vintage,
-            "gdd_apr_sep": gdd_apr_sep,
-            "gdd_apr_sep_sq": gdd_apr_sep ** 2,
-            "huglin_apr_sep": huglin_apr_sep,
-            "rain_sep": rain_sep,
-            "rain_apr": rain_apr,
-            "rain_may": rain_may,
-            "rain_jun": rain_jun,
-            "rain_apr_jun": rain_apr_jun,
-            "rain_jul_aug": rain_jul_aug,
-            "temp_jul": temp_jul,
-            "temp_aug": temp_aug,
-            "temp_jul_aug": temp_jul_aug,
-            "cool_night_sep": cool_night_sep,
-            "days_gt_35_jul_aug": days_gt_35,
-            "rain_oct_feb": rain_oct_feb,
+            "year": int(y),
+            "vintage": int(vintage_vals[0]),
+            "gdd_apr_sep": d.loc[d["month"].between(4, 9), "gdd_month"].sum(),
+            "rain_sep": d.loc[d["month"] == 9, "rain"].sum(),
+            "rain_apr_jun": d.loc[d["month"].between(4, 6), "rain"].sum(),
+            "temp_jul_aug": d.loc[d["month"].between(7, 8), "tmean"].mean(),
+            "rain_oct_feb": (
+                prev.loc[prev["month"].between(10, 12), "rain"].sum()
+                + d.loc[d["month"].between(1, 2), "rain"].sum()
+            ),
+            "temp_jul": d.loc[d["month"] == 7, "tmean"].mean(),
+            "temp_aug": d.loc[d["month"] == 8, "tmean"].mean(),
+            "rain_apr": d.loc[d["month"] == 4, "rain"].sum(),
+            "rain_may": d.loc[d["month"] == 5, "rain"].sum(),
+            "rain_jun": d.loc[d["month"] == 6, "rain"].sum(),
         })
 
-    out = pd.DataFrame(rows)
+    year_df = pd.DataFrame(rows)
+    year_df["gdd_sq"] = year_df["gdd_apr_sep"] ** 2
+    year_df["aug_x_sep_rain"] = year_df["temp_aug"] * year_df["rain_sep"]
 
-    # Interaction
-    out["aug_x_sep_rain"] = out["temp_aug"] * out["rain_sep"]
+    # Drop rows with missing vintage
+    year_df = year_df.dropna(subset=["vintage"]).copy()
 
-    return out
-
-
-year_df = yearly_features(df)
-
-# Drop first year if prior Oct-Dec unavailable
-# More generally, drop rows with missing vintage
-year_df = year_df.dropna(subset=["vintage"]).copy()
-
-# ============================================================
-# MODEL DEFINITIONS
-# ============================================================
-
-MODEL_SPECS = {
-    "baseline_sep_rain": [
-        "rain_sep"
-    ],
-    "monthly_rain": [
-        "rain_apr", "rain_may", "rain_jun", "rain_sep"
-    ],
-    "jul_aug_split": [
-        "rain_apr_jun", "temp_jul", "temp_aug", "rain_sep", "rain_oct_feb"
-    ],
-    "interaction_model": [
-        "rain_apr_jun", "temp_jul", "temp_aug", "rain_sep", "aug_x_sep_rain", "rain_oct_feb"
-    ],
-    "huglin_model": [
-        "huglin_apr_sep", "rain_sep", "rain_oct_feb"
-    ],
-    "best_logit": [
-        "gdd_apr_sep",
-        "gdd_apr_sep_sq",
-        "rain_sep",
-        "rain_apr_jun",
-        "temp_jul_aug",
-        "rain_oct_feb"
-    ],
-    "random_forest": [
-        "rain_apr_jun",
-        "temp_jul",
-        "temp_aug",
-        "rain_sep",
-        "rain_oct_feb",
-        "gdd_apr_sep"
-    ],
-}
-
-if MODEL_NAME not in MODEL_SPECS:
-    raise ValueError(f"Unknown MODEL_NAME '{MODEL_NAME}'. Choose from: {list(MODEL_SPECS.keys())}")
-
-feature_cols = MODEL_SPECS[MODEL_NAME]
-
-# Prepare estimation sample
-model_df = year_df[["year", "vintage"] + feature_cols].dropna().copy()
-model_df["vintage"] = model_df["vintage"].astype(int)
-
-X = model_df[feature_cols].copy()
-y = model_df["vintage"].copy()
-
-# ============================================================
-# DIAGNOSTICS HELPERS
-# ============================================================
-
-def classification_metrics(y_true, p_hat, threshold=0.5):
-    y_pred = (p_hat >= threshold).astype(int)
-
-    auc = roc_auc_score(y_true, p_hat) if len(np.unique(y_true)) > 1 else np.nan
-    brier = brier_score_loss(y_true, p_hat)
-
-    # Handle zero-division safely
-    precision = precision_score(y_true, y_pred, zero_division=0)
-    recall = recall_score(y_true, y_pred, zero_division=0)
-
-    return {
-        "ROC_AUC": auc,
-        "Brier": brier,
-        "Precision": precision,
-        "Recall": recall,
+    # -----------------------------
+    # Model choices
+    # -----------------------------
+    model_options = {
+        "Best default model": [
+            "gdd_apr_sep", "gdd_sq", "rain_sep",
+            "rain_apr_jun", "temp_jul_aug", "rain_oct_feb"
+        ],
+        "Simple harvest model": [
+            "rain_sep"
+        ],
+        "Monthly spring rain model": [
+            "rain_apr", "rain_may", "rain_jun", "rain_sep"
+        ],
+        "July-August split model": [
+            "rain_apr_jun", "temp_jul", "temp_aug", "rain_sep", "rain_oct_feb"
+        ],
+        "Interaction model": [
+            "rain_apr_jun", "temp_jul", "temp_aug", "rain_sep",
+            "aug_x_sep_rain", "rain_oct_feb"
+        ]
     }
 
-def leave_one_out_logit(X, y):
-    loo = LeaveOneOut()
-    probs = np.zeros(len(y), dtype=float)
+    model_name = st.selectbox("Choose model", list(model_options.keys()), index=0)
+    feature_cols = model_options[model_name]
 
-    for train_idx, test_idx in loo.split(X):
-        X_train = X.iloc[train_idx]
-        y_train = y.iloc[train_idx]
-        X_test = X.iloc[test_idx]
+    model_df = year_df[["year", "vintage"] + feature_cols].dropna().copy()
 
-        X_train_const = sm.add_constant(X_train, has_constant="add")
-        X_test_const = sm.add_constant(X_test, has_constant="add")
+    X = model_df[feature_cols]
+    y = model_df["vintage"]
 
-        try:
-            res = sm.Logit(y_train, X_train_const).fit(disp=False)
-            probs[test_idx[0]] = float(res.predict(X_test_const).iloc[0])
-        except Exception:
-            # fallback: penalized sklearn logistic if separation / convergence issues
-            clf = LogisticRegression(max_iter=5000, solver="lbfgs")
-            clf.fit(X_train, y_train)
-            probs[test_idx[0]] = float(clf.predict_proba(X_test)[:, 1][0])
-
-    return probs
-
-def leave_one_out_rf(X, y):
-    loo = LeaveOneOut()
-    probs = np.zeros(len(y), dtype=float)
-
-    for train_idx, test_idx in loo.split(X):
-        X_train = X.iloc[train_idx]
-        y_train = y.iloc[train_idx]
-        X_test = X.iloc[test_idx]
-
-        rf = RandomForestClassifier(
-            n_estimators=300,
-            max_depth=3,
-            min_samples_leaf=3,
-            random_state=42
-        )
-        rf.fit(X_train, y_train)
-        probs[test_idx[0]] = float(rf.predict_proba(X_test)[:, 1][0])
-
-    return probs
-
-# ============================================================
-# ESTIMATE MODEL
-# ============================================================
-
-print("=" * 80)
-print(f"MODEL: {MODEL_NAME}")
-print("Features:", feature_cols)
-print("=" * 80)
-
-if MODEL_NAME != "random_forest":
+    # -----------------------------
+    # Estimate logistic regression
+    # -----------------------------
     X_const = sm.add_constant(X, has_constant="add")
-    logit_model = sm.Logit(y, X_const)
-    logit_res = logit_model.fit(disp=False)
+    model = sm.Logit(y, X_const)
+    result = model.fit(disp=False)
 
-    print("\nLOGIT ESTIMATES\n")
-    print(logit_res.summary())
+    # Predicted probabilities
+    model_df["predicted_probability"] = result.predict(X_const)
 
-    # In-sample fitted probabilities
-    model_df["p_hat_in_sample"] = logit_res.predict(X_const)
+    # Binary predictions at threshold 0.5
+    threshold = 0.5
+    model_df["predicted_class"] = (model_df["predicted_probability"] >= threshold).astype(int)
 
-    # Leave-one-out predicted probabilities
-    model_df["p_hat_loo"] = leave_one_out_logit(X, y)
-
+    # -----------------------------
     # Diagnostics
-    metrics_in = classification_metrics(y, model_df["p_hat_in_sample"], threshold=CLASSIFICATION_THRESHOLD)
-    metrics_loo = classification_metrics(y, model_df["p_hat_loo"], threshold=CLASSIFICATION_THRESHOLD)
+    # -----------------------------
+    auc = roc_auc_score(y, model_df["predicted_probability"])
+    brier = brier_score_loss(y, model_df["predicted_probability"])
+    precision = precision_score(y, model_df["predicted_class"], zero_division=0)
+    recall = recall_score(y, model_df["predicted_class"], zero_division=0)
 
-    print("\nIN-SAMPLE METRICS")
-    for k, v in metrics_in.items():
-        print(f"{k:>12}: {v:.4f}")
+    coef_table = pd.DataFrame({
+        "Variable": result.params.index,
+        "Coefficient": result.params.values,
+        "Std. Error": result.bse.values,
+        "z-stat": result.tvalues.values,
+        "p-value": result.pvalues.values
+    })
 
-    print("\nLEAVE-ONE-OUT METRICS")
-    for k, v in metrics_loo.items():
-        print(f"{k:>12}: {v:.4f}")
+    # -----------------------------
+    # Output
+    # -----------------------------
+    st.subheader("Estimated coefficients")
+    st.dataframe(coef_table)
 
-    print("\nLIKELIHOOD-BASED DIAGNOSTICS")
-    print(f"Log-Likelihood      : {logit_res.llf:.4f}")
-    print(f"Pseudo R-squared    : {logit_res.prsquared:.4f}")
-    print(f"LR test p-value     : {logit_res.llr_pvalue:.4g}")
-    print(f"N observations      : {int(logit_res.nobs)}")
+    st.subheader("Model diagnostics")
+    diag_df = pd.DataFrame({
+        "Metric": [
+            "Pseudo R-squared",
+            "Log-Likelihood",
+            "LR test p-value",
+            "ROC AUC",
+            "Brier Score",
+            "Precision",
+            "Recall"
+        ],
+        "Value": [
+            result.prsquared,
+            result.llf,
+            result.llr_pvalue,
+            auc,
+            brier,
+            precision,
+            recall
+        ]
+    })
+    st.dataframe(diag_df)
 
-else:
-    rf = RandomForestClassifier(
-        n_estimators=300,
-        max_depth=3,
-        min_samples_leaf=3,
-        random_state=42
+    st.subheader("Predicted probability of vintage by year")
+    st.dataframe(
+        model_df[["year", "vintage", "predicted_probability", "predicted_class"] + feature_cols]
+        .sort_values("year")
+        .reset_index(drop=True)
     )
-    rf.fit(X, y)
 
-    model_df["p_hat_in_sample"] = rf.predict_proba(X)[:, 1]
-    model_df["p_hat_loo"] = leave_one_out_rf(X, y)
-
-    metrics_in = classification_metrics(y, model_df["p_hat_in_sample"], threshold=CLASSIFICATION_THRESHOLD)
-    metrics_loo = classification_metrics(y, model_df["p_hat_loo"], threshold=CLASSIFICATION_THRESHOLD)
-
-    print("\nRANDOM FOREST FEATURE IMPORTANCE\n")
-    imp = pd.Series(rf.feature_importances_, index=feature_cols).sort_values(ascending=False)
-    print(imp)
-
-    print("\nIN-SAMPLE METRICS")
-    for k, v in metrics_in.items():
-        print(f"{k:>12}: {v:.4f}")
-
-    print("\nLEAVE-ONE-OUT METRICS")
-    for k, v in metrics_loo.items():
-        print(f"{k:>12}: {v:.4f}")
-
-# ============================================================
-# OUTPUT YEAR-BY-YEAR PROBABILITIES
-# ============================================================
-
-print("\nYEAR-BY-YEAR PREDICTED PROBABILITIES")
-cols_to_show = ["year", "vintage", "p_hat_in_sample", "p_hat_loo"] + feature_cols
-print(model_df[cols_to_show].sort_values("year").to_string(index=False))
-
-# Save results
-out_name = f"vintage_model_results_{MODEL_NAME}.xlsx"
-with pd.ExcelWriter(out_name, engine="openpyxl") as writer:
-    model_df.sort_values("year").to_excel(writer, sheet_name="year_probs", index=False)
-
-    if MODEL_NAME == "random_forest":
-        imp_df = pd.DataFrame({
-            "variable": feature_cols,
-            "importance": rf.feature_importances_
-        }).sort_values("importance", ascending=False)
-        imp_df.to_excel(writer, sheet_name="feature_importance", index=False)
-    else:
-        coef_df = pd.DataFrame({
-            "variable": logit_res.params.index,
-            "coef": logit_res.params.values,
-            "std_err": logit_res.bse.values,
-            "z_stat": logit_res.tvalues.values,
-            "p_value": logit_res.pvalues.values
-        })
-        coef_df.to_excel(writer, sheet_name="coefficients", index=False)
-
-        metrics_df = pd.DataFrame([
-            {"sample": "in_sample", **metrics_in},
-            {"sample": "leave_one_out", **metrics_loo},
-        ])
-        metrics_df.to_excel(writer, sheet_name="metrics", index=False)
-
-print(f"\nResults written to: {out_name}")
+    st.subheader("Regression summary")
+    st.text(result.summary())
