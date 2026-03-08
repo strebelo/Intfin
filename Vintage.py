@@ -192,6 +192,17 @@ if uploaded_file is not None:
 import matplotlib.pyplot as plt
 
 # ------------------------------------------------
+# Compute predicted probabilities
+# ------------------------------------------------
+
+X_plot = year_df[feature_cols].dropna().copy()
+X_plot_const = sm.add_constant(X_plot, has_constant="add")
+
+year_df.loc[X_plot.index, "predicted_probability"] = result.predict(X_plot_const)
+
+plot_df = year_df.dropna(subset=["predicted_probability"]).copy()
+
+# ------------------------------------------------
 # Plot predicted probability vs actual vintages
 # ------------------------------------------------
 
@@ -201,17 +212,17 @@ st.subheader("Predicted probability of vintage by year")
 
 fig, ax = plt.subplots(figsize=(10,5))
 
-# Line: predicted probability
+# Predicted probability line
 ax.plot(
-    model_df["year"],
-    model_df["predicted_probability"],
+    plot_df["year"],
+    plot_df["predicted_probability"],
     color="blue",
     linewidth=2,
     label="Predicted probability"
 )
 
-# Points: actual vintage declarations
-vintage_years = model_df[model_df["vintage"] == 1]
+# Vintage years
+vintage_years = plot_df[plot_df["vintage"] == 1]
 
 ax.scatter(
     vintage_years["year"],
@@ -221,7 +232,7 @@ ax.scatter(
     label="Declared vintage"
 )
 
-# Optional reference line
+# Reference line
 ax.axhline(0.5, linestyle="--", color="gray", alpha=0.6)
 
 ax.set_xlabel("Year")
