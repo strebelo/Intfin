@@ -188,3 +188,21 @@ if uploaded_file is not None:
 
     st.subheader("Regression summary")
     st.text(result.summary())
+
+import matplotlib.pyplot as plt
+
+st.subheader("Predicted probability vs actual vintage years")
+
+fig, ax = plt.subplots(figsize=(10,5))
+
+# Line: predicted probability
+ax.plot(
+    model_df["year"],
+    model_df["predicted_probability"],
+    color="blue",
+    linewidth=2,
+    label="Predicted probability"
+)
+
+# Points: actual vintage declarations
+vintage_years = model_df[model_df["vintage
