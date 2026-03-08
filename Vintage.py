@@ -320,3 +320,18 @@ st.pyplot(fig)
 
 st.subheader("Full regression summary")
 st.text(result.summary())
+
+threshold = 0.5
+
+model_df["predicted_class"] = (
+    model_df["predicted_probability"] >= threshold
+).astype(int)
+
+misclassified = model_df[
+    model_df["predicted_class"] != model_df["vintage"]
+]
+
+st.subheader("Misclassified years")
+st.dataframe(
+    misclassified[["year","vintage","predicted_probability","predicted_class"]]
+)
