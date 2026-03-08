@@ -191,7 +191,13 @@ if uploaded_file is not None:
 
 import matplotlib.pyplot as plt
 
-st.subheader("Predicted probability vs actual vintage years")
+# ------------------------------------------------
+# Plot predicted probability vs actual vintages
+# ------------------------------------------------
+
+import matplotlib.pyplot as plt
+
+st.subheader("Predicted probability of vintage by year")
 
 fig, ax = plt.subplots(figsize=(10,5))
 
@@ -205,4 +211,24 @@ ax.plot(
 )
 
 # Points: actual vintage declarations
-vintage_years = model_df[model_df["vintage
+vintage_years = model_df[model_df["vintage"] == 1]
+
+ax.scatter(
+    vintage_years["year"],
+    vintage_years["predicted_probability"],
+    color="red",
+    s=80,
+    label="Declared vintage"
+)
+
+# Optional reference line
+ax.axhline(0.5, linestyle="--", color="gray", alpha=0.6)
+
+ax.set_xlabel("Year")
+ax.set_ylabel("Probability of Vintage")
+ax.set_title("Model Prediction of Classic Port Vintages")
+
+ax.legend()
+ax.grid(alpha=0.3)
+
+st.pyplot(fig)
