@@ -202,17 +202,29 @@ year_df.loc[X_plot.index, "predicted_probability"] = result.predict(X_plot_const
 
 plot_df = year_df.dropna(subset=["predicted_probability"]).copy()
 
-# ------------------------------------------------
-# Plot predicted probability vs actual vintages
-# ------------------------------------------------
+# -----------------------------------------
+# Predicted probability vs actual vintages
+# -----------------------------------------
 
 import matplotlib.pyplot as plt
 
+# Predicted probabilities from the fitted model
+X_const = sm.add_constant(X, has_constant="add")
+predicted_prob = result.predict(X_const)
+
+# Build plotting dataframe
+plot_df = pd.DataFrame({
+    "year": model_df["year"],
+    "vintage": y,
+    "predicted_probability": predicted_prob
+})
+
+# Plot
 st.subheader("Predicted probability of vintage by year")
 
 fig, ax = plt.subplots(figsize=(10,5))
 
-# Predicted probability line
+# Line for predicted probability
 ax.plot(
     plot_df["year"],
     plot_df["predicted_probability"],
@@ -221,23 +233,23 @@ ax.plot(
     label="Predicted probability"
 )
 
-# Vintage years
-vintage_years = plot_df[plot_df["vintage"] == 1]
+# Highlight actual vintages
+vintage_points = plot_df[plot_df["vintage"] == 1]
 
 ax.scatter(
-    vintage_years["year"],
-    vintage_years["predicted_probability"],
+    vintage_points["year"],
+    vintage_points["predicted_probability"],
     color="red",
     s=80,
     label="Declared vintage"
 )
 
-# Reference line
-ax.axhline(0.5, linestyle="--", color="gray", alpha=0.6)
+# Reference threshold
+ax.axhline(0.5, linestyle="--", color="gray")
 
 ax.set_xlabel("Year")
 ax.set_ylabel("Probability of Vintage")
-ax.set_title("Model Prediction of Classic Port Vintages")
+ax.set_title("Predicted Probability of Classic Port Vintage")
 
 ax.legend()
 ax.grid(alpha=0.3)
