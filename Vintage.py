@@ -187,17 +187,21 @@ st.write("BIC:",model.bic)
 # Plot probabilities
 # ----------------------------------
 
-fig, ax = plt.subplots()
+plt.figure()
 
-ax.plot(year_df["year"],probs,label="Predicted probability")
+declared = model_df[model_df["Vintage"] > 0]
+y_line = [50] * len(declared)
 
-ax.scatter(year_df["year"],y,color="red",label="Actual vintage")
+plt.scatter(declared["GDD_JulAug"], y_line, label="Declared vintages")
 
-ax.set_ylabel("Probability")
+plt.axhline(50, linestyle="--", label="50% probability")
 
-ax.legend()
+plt.xlabel("Ripening Heat (GDD Jul-Aug)")
+plt.ylabel("Probability of Declaration")
+plt.legend()
+plt.title("Port Vintage Climate Pattern")
 
-st.pyplot(fig)
+plt.show()
 
 # ----------------------------------
 # Misclassifications
