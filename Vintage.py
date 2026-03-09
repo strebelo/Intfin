@@ -54,6 +54,9 @@ for y in years:
     row["Temp_Jul_Aug"] = sub[sub.month.isin([7, 8])]["tmean"].mean()
     row["Temp_Jul"] = sub[sub.month == 7]["tmean"].mean()
 
+    row["TempJul_x_RainSep"] = row["Temp_Jul"] * row["Rain_Sep"]
+    row["TempJulAug_x_RainSep"] = row["Temp_Jul_Aug"] * row["Rain_Sep"]
+
     row["Rain_Apr_May"] = sub[sub.month.isin([4, 5])]["rain"].sum()
     row["Rain_Jun_Aug"] = sub[sub.month.isin([6, 7, 8])]["rain"].sum()
     row["Rain_Sep_Oct"] = sub[sub.month.isin([9, 10])]["rain"].sum()
@@ -69,16 +72,6 @@ for y in years:
     rain_oct_dec = prev[prev.month.isin([10, 11, 12])]["rain"].sum()
     rain_jan_feb = sub[sub.month.isin([1, 2])]["rain"].sum()
     row["Rain_Oct_Feb"] = rain_oct_dec + rain_jan_feb
-
-    # Interaction variables 
-
-    row["Rain_Sep"] = sub[sub.month == 9]["rain"].sum()
-
-row["Temp_Jul_Aug"] = sub[sub.month.isin([7, 8])]["tmean"].mean()
-row["Temp_Jul"] = sub[sub.month == 7]["tmean"].mean()
-
-row["TempJul_x_RainSep"] = row["Temp_Jul"] * row["Rain_Sep"]
-row["TempJulAug_x_RainSep"] = row["Temp_Jul_Aug"] * row["Rain_Sep"]
 
     # Vintage outcome
     v = sub[sub.month == 1]["vintage"].values
