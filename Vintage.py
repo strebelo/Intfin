@@ -70,6 +70,16 @@ for y in years:
     rain_jan_feb = sub[sub.month.isin([1, 2])]["rain"].sum()
     row["Rain_Oct_Feb"] = rain_oct_dec + rain_jan_feb
 
+    # Interaction variables 
+
+    row["Rain_Sep"] = sub[sub.month == 9]["rain"].sum()
+
+row["Temp_Jul_Aug"] = sub[sub.month.isin([7, 8])]["tmean"].mean()
+row["Temp_Jul"] = sub[sub.month == 7]["tmean"].mean()
+
+row["TempJul_x_RainSep"] = row["Temp_Jul"] * row["Rain_Sep"]
+row["TempJulAug_x_RainSep"] = row["Temp_Jul_Aug"] * row["Rain_Sep"]
+
     # Vintage outcome
     v = sub[sub.month == 1]["vintage"].values
     if len(v) == 0:
@@ -109,6 +119,8 @@ predictors = [
     "Rain_Sep",
     "Temp_Jul_Aug",
     "Temp_Jul",
+    "TempJul_x_RainSep",
+    "TempJulAug_x_RainSep",
     "Rain_Apr_May",
     "Rain_Jun_Aug",
     "Rain_Sep_Oct",
