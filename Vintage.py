@@ -368,36 +368,39 @@ marginal_effect = pmean * (1 - pmean) * dz_drain
 st.header("Marginal Effect of September Rain")
 st.write("Marginal effect evaluated at average climate:", f"{marginal_effect:.4f}")
 
-# ---- Plot marginal effect of September rain vs aridity ----
+# ----------------------------------
+# Marginal effect of September rain
+# when Aridity_Index = mean + 1 std
+# ----------------------------------
 
-arid_vals = np.linspace(year_df["Aridity_Index"].min(), year_df["Aridity_Index"].max(), 50)
 means = year_df.mean(numeric_only=True)
+A_1sd = year_df["Aridity_Index"].mean() + year_df["Aridity_Index"].std()
+
 rain_mean = means.get("Rain_Sep", 0)
+tempjul = means.get("Temp_Jul", 0)
+tempjulaug = means.get("Temp_Jul_Aug", 0)
 
-me_vals = []
+dz_drain_1sd = (
+    model.params.get("Rain_Sep", 0)
+    + 2 * model.params.get("RainSep_sq", 0) * rain_mean
+    + model.params.get("TempJul_x_RainSep", 0) * tempjul
+    + model.params.get("TempJulAug_x_RainSep", 0) * tempjulaug
+    + model.params.get("Aridity_x_RainSep", 0) * A_1sd
+    + 2 * model.params.get("Aridity_x_RainSep_sq", 0) * A_1sd * rain_mean
+)
 
-for A in arid_vals:
-    dz = (
-        model.params.get("Rain_Sep",0)
-        + 2*model.params.get("RainSep_sq",0)*rain_mean
-        + model.params.get("TempJul_x_RainSep",0)*means.get("Temp_Jul",0)
-        + model.params.get("TempJulAug_x_RainSep",0)*means.get("Temp_Jul_Aug",0)
-        + model.params.get("Aridity_x_RainSep",0)*A
-        + 2*model.params.get("Aridity_x_RainSep_sq",0)*A*rain_mean
-    )
+# build prediction row
+X1 = X.mean().to_frame().T
+if "Aridity_Index" in X1.columns:
+    X1["Aridity_Index"] = A_1sd
+if "Aridity_x_RainSep" in X1.columns:
+    X1["Aridity_x_RainSep"] = A_1sd * rain_mean
+if "Aridity_x_RainSep_sq" in X1.columns:
+    X1["Aridity_x_RainSep_sq"] = A_1sd * rain_mean**2
 
-    Xtmp = X.mean().to_frame().T
-    if "Aridity_Index" in Xtmp: Xtmp["Aridity_Index"] = A
-    if "Aridity_x_RainSep" in Xtmp: Xtmp["Aridity_x_RainSep"] = A * rain_mean
-    if "Aridity_x_RainSep_sq" in Xtmp: Xtmp["Aridity_x_RainSep_sq"] = A * rain_mean**2
+p1 = model.predict(X1[X.columns]).iloc[0]
 
-    p = model.predict(Xtmp[X.columns]).iloc[0]
-    me_vals.append(p*(1-p)*dz)
+ME_rain_1sd = p1 * (1 - p1) * dz_drain_1sd
 
-fig, ax = plt.subplots()
-ax.plot(arid_vals, me_vals, linewidth=2)
-ax.axhline(0, linestyle="--")
-ax.set_xlabel("Aridity Index")
-ax.set_ylabel("Marginal Effect of September Rain")
-ax.set_title("Marginal Effect of Rain vs Aridity")
-st.pyplot(fig)
+st.header("Marginal Effect of September Rain at Aridity = Mean + 1 SD")
+st.write(f"{ME_rain_1sd:.4f}")
