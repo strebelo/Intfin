@@ -97,6 +97,7 @@ for y in years:
     # Max temperatures
     row["Tmax_June"] = sub[sub["month"] == 6]["tmax"].mean()
     row["Tmax_July"] = sub[sub["month"] == 7]["tmax"].mean()
+    row["Tmax_August"] = sub[sub["month"] == 8]["tmax"].mean()
     row["Tmax_June_July"] = sub[sub["month"].isin([6, 7])]["tmax"].mean()
 
     # GDD square
@@ -152,7 +153,8 @@ predictors = [
     "Aridity_x_RainSep",
     "Aridity_x_RainSep_sq",
     "Tmax_June",
-    "Tmax_July"
+    "Tmax_July",
+    "Tmax_August"
 ]
 
 default_selected = {
@@ -163,7 +165,8 @@ default_selected = {
     "Rain_Apr_May",
     "Rain_Oct_Feb",
     "Aridity_x_RainSep",
-    "Tmax_July"
+    "Tmax_July",
+    "Tmax_August"
 }
 
 selected = []
