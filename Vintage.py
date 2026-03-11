@@ -207,6 +207,16 @@ summary_table = pd.DataFrame({
 st.dataframe(summary_table)
 
 # ----------------------------------
+# Summary statistics (averages)
+# ----------------------------------
+
+st.header("Average of Variables")
+
+avg_table = year_df.mean(numeric_only=True).to_frame(name="Average")
+
+st.dataframe(avg_table)
+
+# ----------------------------------
 # Predictions
 # ----------------------------------
 
@@ -276,7 +286,6 @@ ax.legend()
 
 st.pyplot(fig)
 
-st.write("Average Aridity Index:", year_df["Aridity_Index"].mean())
 
 # ----------------------------------
 # Misclassifications
