@@ -317,6 +317,12 @@ frac_nonvintages_misclassified = (
 )
 
 st.header("Classification error rates")
-st.write("Fraction of vintages misclassified:", frac_vintages_misclassified)
-st.write("Fraction of non-vintages misclassified:", frac_nonvintages_misclassified)
+st.write(
+    "Fraction of vintages misclassified:",
+    f"{frac_vintages_misclassified:.2f}"
+)
+
+st.write(
+    "Fraction of non-vintages misclassified:",
+    f"{frac_nonvintages_misclassified:.2f}"
 
