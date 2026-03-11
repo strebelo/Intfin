@@ -48,11 +48,11 @@ for y in years:
     row["GDD_Apr_Sep"] = sub[sub["month"].between(4, 9)]["gdd"].sum()
     row["Rain_Sep"] = sub[sub["month"] == 9]["rain"].sum()
 
-    row["Temp_Jul_Aug"] = sub[sub["month"].isin([7, 8])]["tmean"].mean()
     row["Temp_Jul"] = sub[sub["month"] == 7]["tmean"].mean()
+    row["Temp_Aug"] = sub[sub["month"] == 8]["tmean"].mean()
 
     row["TempJul_x_RainSep"] = row["Temp_Jul"] * row["Rain_Sep"]
-    row["TempJulAug_x_RainSep"] = row["Temp_Jul_Aug"] * row["Rain_Sep"]
+    row["TempAug_x_RainSep"] = row["Temp_Aug"] * row["Rain_Sep"]
 
     row["Rain_Apr_May"] = sub[sub["month"].isin([4, 5])]["rain"].sum()
     row["Rain_Jun_Aug"] = sub[sub["month"].isin([6, 7, 8])]["rain"].sum()
@@ -138,10 +138,10 @@ predictors = [
     "GDD_Apr_Sep_sq",
     "Rain_Sep",
     "RainSep_sq",
-    "Temp_Jul_Aug",
     "Temp_Jul",
+    "Temp_Aug",
     "TempJul_x_RainSep",
-    "TempJulAug_x_RainSep",
+    "TempAug_x_RainSep",
     "Rain_Apr_May",
     "Rain_Jun_Aug",
     "Rain_Sep_Oct",
@@ -159,7 +159,8 @@ default_selected = {
     "GDD_Apr_Sep",
     "Rain_Sep",
     "Temp_Jul",
-    "TempJul_x_RainSep",
+    "Temp_Aug",
+    "TempAug_x_RainSep",
     "Rain_Apr_May",
     "Rain_Jun_Aug",
     "Aridity_x_RainSep",
@@ -260,9 +261,8 @@ plot_df["actual"] = y
 
 declared = plot_df[plot_df["actual"] == 1].copy()
 
-fig, ax = plt.subplots(figsize=(12,6))
+fig, ax = plt.subplots(figsize=(12, 6))
 
-# predicted probability line
 ax.plot(
     plot_df["year"],
     plot_df["prob"],
@@ -270,7 +270,6 @@ ax.plot(
     label="Predicted probability"
 )
 
-# threshold line
 ax.axhline(
     threshold,
     linestyle="--",
@@ -278,7 +277,6 @@ ax.axhline(
     label=f"Threshold = {threshold:.2f}"
 )
 
-# declared vintages
 ax.scatter(
     declared["year"],
     declared["prob"],
@@ -291,8 +289,7 @@ ax.scatter(
 ax.set_xlabel("Year")
 ax.set_ylabel("Probability of Vintage")
 ax.set_title("Predicted Probability of Port Vintage Declaration")
-ax.set_ylim(0,1)
-
+ax.set_ylim(0, 1)
 ax.legend()
 
 st.pyplot(fig)
@@ -347,7 +344,7 @@ means = year_df.mean(numeric_only=True)
 
 rain = means.get("Rain_Sep", 0)
 tempjul = means.get("Temp_Jul", 0)
-tempjulaug = means.get("Temp_Jul_Aug", 0)
+tempaug = means.get("Temp_Aug", 0)
 aridity = means.get("Aridity_Index", 0)
 
 b = model.params
@@ -356,7 +353,7 @@ dz_drain = (
     b.get("Rain_Sep", 0)
     + 2 * b.get("RainSep_sq", 0) * rain
     + b.get("TempJul_x_RainSep", 0) * tempjul
-    + b.get("TempJulAug_x_RainSep", 0) * tempjulaug
+    + b.get("TempAug_x_RainSep", 0) * tempaug
     + b.get("Aridity_x_RainSep", 0) * aridity
     + 2 * b.get("Aridity_x_RainSep_sq", 0) * aridity * rain
 )
@@ -386,12 +383,14 @@ dz_drain_1sd = (
     model.params.get("Rain_Sep", 0)
     + 2 * model.params.get("RainSep_sq", 0) * rain
     + model.params.get("TempJul_x_RainSep", 0) * tempjul
-    + model.params.get("TempJulAug_x_RainSep", 0) * tempjulaug
+    + model.params.get("TempAug_x_RainSep", 0) * tempaug
     + model.params.get("Aridity_x_RainSep", 0) * A_1sd
     + 2 * model.params.get("Aridity_x_RainSep_sq", 0) * A_1sd * rain
 )
 
 X1 = X.mean().to_frame().T
+if "const" in X1.columns:
+    X1["const"] = 1.0
 if "Aridity_Index" in X1.columns:
     X1["Aridity_Index"] = A_1sd
 if "Aridity_x_RainSep" in X1.columns:
