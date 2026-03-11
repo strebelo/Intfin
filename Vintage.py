@@ -68,9 +68,9 @@ for y in years:
         sub[sub["month"].isin([8, 9])]["tmin"]
     ).mean()
 
-     row["DTR_July"] = (
-        sub[sub["month"].isin([7)]["tmax"] -
-        sub[sub["month"].isin([7))]["tmin"]
+    row["DTR_July"] = (
+        sub[sub["month"] == 7]["tmax"] -
+        sub[sub["month"] == 7]["tmin"]
     ).mean()
 
     row["Temp_Apr_Jun"] = sub[sub["month"].isin([4, 5, 6])]["tmean"].mean()
@@ -168,7 +168,7 @@ predictors = [
     "Tmax_June",
     "Tmax_July",
     "Tmax_August",
-    "Tmax_June_July"
+    "Tmax_June_July",
     "DTR_July"
 ]
 
@@ -181,7 +181,8 @@ default_selected = {
     "Rain_Oct_Feb",
     "Aridity_x_RainSep",
     "Tmax_July",
-    "Tmax_August"
+    "Tmax_August",
+    "DTR_July"
 }
 
 selected = []
@@ -386,7 +387,6 @@ for col in X.columns:
     else:
         X1_dict[col] = means.get(col, year_df[col].mean() if col in year_df.columns else 0.0)
 
-# Override components needed for this counterfactual point
 if "Rain_Sep" in X1_dict:
     X1_dict["Rain_Sep"] = rain
 if "Temp_Jul" in X1_dict:
@@ -453,10 +453,8 @@ st.write(f"{ME_rain_2sd:.4f}")
 def linear_index_derivative(var_name, params, means_dict):
     d = 0.0
 
-    # Direct effect
     d += params.get(var_name, 0.0)
 
-    # Own square terms
     square_map = {
         "Rain_Sep": "RainSep_sq",
         "GDD_Apr_Sep": "GDD_Apr_Sep_sq"
@@ -466,7 +464,6 @@ def linear_index_derivative(var_name, params, means_dict):
         sq_name = square_map[var_name]
         d += 2 * params.get(sq_name, 0.0) * means_dict.get(var_name, 0.0)
 
-    # Standard interaction terms
     interaction_map = {
         "Rain_Sep": [
             ("TempJul_x_RainSep", "Temp_Jul"),
@@ -488,7 +485,6 @@ def linear_index_derivative(var_name, params, means_dict):
         for interaction_term, other_var in interaction_map[var_name]:
             d += params.get(interaction_term, 0.0) * means_dict.get(other_var, 0.0)
 
-    # Interaction involving Aridity * Rain_Sep^2
     if var_name == "Rain_Sep":
         d += (
             2
@@ -505,7 +501,6 @@ def linear_index_derivative(var_name, params, means_dict):
 
     return d
 
-# Build mean covariate vector consistent with X
 Xmean_dict = {}
 for col in X.columns:
     if col == "const":
@@ -513,7 +508,6 @@ for col in X.columns:
     else:
         Xmean_dict[col] = means.get(col, 0.0)
 
-# Keep constructed terms internally consistent if they are present
 rain_mean = Xmean_dict.get("Rain_Sep", means.get("Rain_Sep", 0.0))
 tempjul_mean = Xmean_dict.get("Temp_Jul", means.get("Temp_Jul", 0.0))
 tempaug_mean = Xmean_dict.get("Temp_Aug", means.get("Temp_Aug", 0.0))
@@ -546,6 +540,7 @@ base_variables_for_me = [
     "Rain_Jun_Aug",
     "Rain_Sep_Oct",
     "DTR_Aug_Sep",
+    "DTR_July",
     "Temp_Apr_Jun",
     "Rain_Oct_Feb",
     "Aridity_Index",
