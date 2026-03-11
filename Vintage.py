@@ -284,7 +284,8 @@ fig.update_layout(
     xaxis_title="Year",
     yaxis_title="Probability of Vintage",
     yaxis=dict(range=[0, 1]),
-    hovermode="x unified"
+    hovermode="x unified",
+    height=700
 )
 
 st.plotly_chart(fig, use_container_width=True)
