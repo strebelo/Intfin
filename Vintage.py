@@ -111,6 +111,11 @@ for y in years:
 
     # Max temperature in July
     row["Tmax_July"] = sub[sub.month == 7]["tmax"].mean()
+    
+    row["GDD_Apr_Sep"] = sub[sub.month.between(4, 9)]["gdd"].sum()
+
+    # square of growing degree days
+    row["GDD_Apr_Sep_sq"] = row["GDD_Apr_Sep"] ** 2
 
     # Vintage outcome
     v = sub[sub.month == 1]["vintage"].values
@@ -148,6 +153,7 @@ st.sidebar.header("Choose predictors")
 
 predictors = [
     "GDD_Apr_Sep",
+    "GDD_Apr_Sep_sq",
     "Rain_Sep",
     "RainSep_sq",
     "Temp_Jul_Aug",
