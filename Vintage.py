@@ -164,6 +164,7 @@ default_selected = {
     "TempAug_x_RainSep",
     "Rain_Apr_May",
     "Rain_Jun_Aug",
+    "Temp_Apr_Jun",
     "Aridity_x_RainSep",
     "Aridity_x_RainSep_sq",
     "Tmax_June",
