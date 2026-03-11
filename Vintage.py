@@ -325,13 +325,15 @@ frac_nonvintages_misclassified = (
 )
 
 st.header("Classification error rates")
+
 st.write(
-    "Fraction of vintages misclassified:",
-    f"{frac_vintages_misclassified:.2f}"
+    "Vintages misclassified:",
+    f"{false_negatives} out of {n_vintages} ({frac_vintages_misclassified:.2f})"
 )
+
 st.write(
-    "Fraction of non-vintages misclassified:",
-    f"{frac_nonvintages_misclassified:.2f}"
+    "Non-vintages misclassified:",
+    f"{false_positives} out of {n_nonvintages} ({frac_nonvintages_misclassified:.2f})"
 )
 
 # ----------------------------------
