@@ -325,4 +325,5 @@ st.write(
 st.write(
     "Fraction of non-vintages misclassified:",
     f"{frac_nonvintages_misclassified:.2f}"
+)
 
