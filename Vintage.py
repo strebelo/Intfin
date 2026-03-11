@@ -367,3 +367,29 @@ marginal_effect = pmean * (1 - pmean) * dz_drain
 
 st.header("Marginal Effect of September Rain")
 st.write("Marginal effect evaluated at average climate:", f"{marginal_effect:.4f}")
+
+# ---- Marginal effect of rain when aridity = mean + 2 std ----
+
+A_high = df["aridity"].mean() + 2 * df["aridity"].std()
+
+# coefficients
+beta_rain = model.params["rain"]
+beta_inter = model.params["rain_aridity"]
+
+# create observation with mean values
+Xmean = df[feature_cols].mean().to_frame().T
+
+# set aridity to mean + 2sd
+Xmean["aridity"] = A_high
+Xmean["rain_aridity"] = Xmean["rain"] * Xmean["aridity"]
+
+# add constant
+Xmean = sm.add_constant(Xmean)
+
+# predicted probability
+p = model.predict(Xmean)[0]
+
+# marginal effect
+ME_rain = p * (1 - p) * (beta_rain + beta_inter * A_high)
+
+print("Marginal effect of rain when aridity = mean + 2sd:", ME_rain)
