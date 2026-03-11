@@ -368,25 +368,51 @@ marginal_effect = pmean * (1 - pmean) * dz_drain
 st.header("Marginal Effect of September Rain")
 st.write("Marginal effect evaluated at average climate:", f"{marginal_effect:.4f}")
 
-# ---- Marginal effect of rain when aridity = mean + 2 std ----
+# ----------------------------------
+# Marginal effect of September rain
+# when Aridity_Index = mean + 2 std
+# ----------------------------------
 
-A_high = df["aridity"].mean() + 2 * df["aridity"].std()
+means = year_df.mean(numeric_only=True)
+A_high = year_df["Aridity_Index"].mean() + 2 * year_df["Aridity_Index"].std()
 
-# coefficients
-beta_rain = model.params["rain"]
-beta_inter = model.params["rain_aridity"]
+tempjul = means.get("Temp_Jul", 0)
+tempjulaug = means.get("Temp_Jul_Aug", 0)
+rain_mean = means.get("Rain_Sep", 0)
 
-# create observation with mean values of regressors
-Xmean = X.mean().to_frame().T
+# derivative of index z with respect to Rain_Sep
+dz_drain_highA = (
+    model.params.get("Rain_Sep", 0)
+    + 2 * model.params.get("RainSep_sq", 0) * rain_mean
+    + model.params.get("TempJul_x_RainSep", 0) * tempjul
+    + model.params.get("TempJulAug_x_RainSep", 0) * tempjulaug
+    + model.params.get("Aridity_x_RainSep", 0) * A_high
+    + 2 * model.params.get("Aridity_x_RainSep_sq", 0) * A_high * rain_mean
+)
 
-# set aridity to mean + 2sd
-Xmean["aridity"] = A_high
-Xmean["rain_aridity"] = Xmean["rain"] * Xmean["aridity"]
+# build prediction row with exact same columns as X
+Xhigh_dict = {}
 
-# predicted probability
-p = model.predict(Xmean)[0]
+for col in X.columns:
+    if col == "const":
+        Xhigh_dict[col] = 1.0
+    elif col == "Aridity_Index":
+        Xhigh_dict[col] = A_high
+    elif col == "Aridity_x_RainSep":
+        Xhigh_dict[col] = A_high * rain_mean
+    elif col == "Aridity_x_RainSep_sq":
+        Xhigh_dict[col] = A_high * (rain_mean ** 2)
+    else:
+        Xhigh_dict[col] = means.get(col, 0)
 
-# marginal effect
-ME_rain = p * (1 - p) * (beta_rain + beta_inter * A_high)
+Xhigh = pd.DataFrame([Xhigh_dict])[X.columns]
 
-print("Marginal effect of rain when aridity = mean + 2sd:", ME_rain)
+p_high = model.predict(Xhigh).iloc[0]
+
+ME_rain_highA = p_high * (1 - p_high) * dz_drain_highA
+
+st.header("Marginal Effect of September Rain at High Aridity")
+st.write(
+    "Marginal effect when Aridity_Index = mean + 2 std:",
+    f"{ME_rain_highA:.4f}"
+)
