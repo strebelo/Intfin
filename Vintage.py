@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
-import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from sklearn.metrics import accuracy_score, roc_auc_score
 
@@ -156,9 +155,22 @@ predictors = [
     "Tmax_July"
 ]
 
+default_selected = {
+    "GDD_Apr_Sep",
+    "Rain_Sep",
+    "Temp_Jul",
+    "TempJul_x_RainSep",
+    "Rain_Apr_May",
+    "Rain_Jun_Aug",
+    "Aridity_x_RainSep",
+    "Aridity_x_RainSep_sq",
+    "Tmax_June",
+    "Tmax_July"
+}
+
 selected = []
 for p in predictors:
-    if st.sidebar.checkbox(p, True):
+    if st.sidebar.checkbox(p, value=(p in default_selected)):
         selected.append(p)
 
 if len(selected) == 0:
@@ -245,38 +257,49 @@ st.header("Predicted probabilities over time")
 plot_df = year_df.copy()
 plot_df["prob"] = probs
 plot_df["actual"] = y
+plot_df["predicted_vintage"] = pred
 
 declared = plot_df[plot_df["actual"] == 1].copy()
 
 fig = go.Figure()
 
-# blue line: fitted probabilities
+# Fitted probability line
 fig.add_trace(go.Scatter(
     x=plot_df["year"],
     y=plot_df["prob"],
-    mode="lines",
+    mode="lines+markers",
     name="Predicted probability",
-    customdata=np.stack([plot_df["year"], plot_df["prob"]], axis=-1),
-    hovertemplate="Year: %{customdata[0]}<br>Probability: %{customdata[1]:.3f}<extra></extra>"
+    line=dict(width=3),
+    marker=dict(size=5),
+    customdata=np.stack(
+        [plot_df["year"], plot_df["prob"], plot_df["actual"], plot_df["predicted_vintage"]],
+        axis=-1
+    ),
+    hovertemplate=(
+        "Year: %{customdata[0]}<br>"
+        "Probability: %{customdata[1]:.3f}<br>"
+        "Declared vintage: %{customdata[2]}<br>"
+        "Predicted vintage: %{customdata[3]}<extra></extra>"
+    )
 ))
 
-# red dots: declared vintages
+# Declared vintages
 fig.add_trace(go.Scatter(
     x=declared["year"],
     y=declared["prob"],
     mode="markers",
     name="Declared vintage",
-    marker=dict(color="red", size=9),
+    marker=dict(color="red", size=11, line=dict(width=1)),
     customdata=np.stack([declared["year"], declared["prob"]], axis=-1),
     hovertemplate="Year: %{customdata[0]}<br>Probability: %{customdata[1]:.3f}<extra></extra>"
 ))
 
-# threshold line
+# Threshold line
 fig.add_hline(
     y=threshold,
     line_dash="dash",
     annotation_text=f"Threshold = {threshold:.2f}",
-    annotation_position="top left"
+    annotation_position="bottom left"
 )
 
 fig.update_layout(
@@ -285,29 +308,27 @@ fig.update_layout(
         x=0.5,
         xanchor="center"
     ),
-    xaxis_title=None,
-    yaxis_title=None,
-    yaxis=dict(range=[0, 1]),
-    hovermode="x unified",
-    height=650
+    height=700,
+    hovermode="closest",
+    showlegend=True,
+    margin=dict(l=60, r=30, t=90, b=40),
+    xaxis=dict(
+        title="Year",
+        side="top",
+        tickmode="linear"
+    ),
+    yaxis=dict(
+        range=[0, 1],
+        title=None
+    )
 )
 
 fig.add_annotation(
     text="Probability of Vintage",
     xref="paper",
     yref="paper",
-    x=-0.07,
-    y=1.05,
-    showarrow=False,
-    font=dict(size=12)
-)
-
-fig.add_annotation(
-    text="Year",
-    xref="paper",
-    yref="paper",
-    x=0.5,
-    y=1.08,
+    x=0.0,
+    y=1.12,
     showarrow=False,
     font=dict(size=12)
 )
@@ -421,4 +442,3 @@ ME_rain_1sd = p1 * (1 - p1) * dz_drain_1sd
 
 st.header("Marginal Effect of September Rain at Aridity = Mean + 1 SD")
 st.write(f"{ME_rain_1sd:.4f}")
-
