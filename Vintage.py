@@ -106,6 +106,12 @@ for y in years:
     # Aridity x September rain squared
     row["Aridity_x_RainSep_sq"] = row["Aridity_Index"] * row["RainSep_sq"]
 
+    # Max temperature in June
+    row["Tmax_June"] = sub[sub.month == 6]["tmax"].mean()
+
+    # Max temperature in July
+    row["Tmax_July"] = sub[sub.month == 7]["tmax"].mean()
+
     # Vintage outcome
     v = sub[sub.month == 1]["vintage"].values
     if len(v) == 0:
@@ -156,7 +162,9 @@ predictors = [
     "Rain_Oct_Feb",
     "Aridity_Index",
     "Aridity_x_RainSep",
-    "Aridity_x_RainSep_sq"
+    "Aridity_x_RainSep_sq",
+    "Tmax_June",
+    "Tmax_July"
 ]
 
 selected = []
