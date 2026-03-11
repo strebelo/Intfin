@@ -73,6 +73,33 @@ for y in years:
     rain_jan_feb = sub[sub.month.isin([1, 2])]["rain"].sum()
     row["Rain_Oct_Feb"] = rain_oct_dec + rain_jan_feb
 
+        # Average temperature from previous October to current August
+    temp_oct_dec = prev[prev.month.isin([10, 11, 12])]["tmean"]
+    temp_jan_aug = sub[sub.month.isin([1, 2, 3, 4, 5, 6, 7, 8])]["tmean"]
+    temp_oct_aug = pd.concat([temp_oct_dec, temp_jan_aug])
+
+    avg_temp_oct_aug = temp_oct_aug.mean()
+
+    # Rainfall from previous October to current August
+    rain_oct_dec = prev[prev.month.isin([10, 11, 12])]["rain"].sum()
+    rain_jan_aug = sub[sub.month.isin([1, 2, 3, 4, 5, 6, 7, 8])]["rain"].sum()
+    rain_oct_aug = rain_oct_dec + rain_jan_aug
+
+    # Aridity index = 100 * average temperature Oct-Aug / rainfall Oct-Aug
+    if rain_oct_aug > 0:
+        row["Aridity_Index"] = 100 * avg_temp_oct_aug / rain_oct_aug
+    else:
+        row["Aridity_Index"] = np.nan
+
+    # Tmax in June
+    row["Tmax_June"] = sub[sub.month == 6]["tmax"].mean()
+
+    # Tmax in June and July
+    row["Tmax_June_July"] = sub[sub.month.isin([6, 7])]["tmax"].mean()
+
+    # Aridity x September rain
+    row["Aridity_x_RainSep"] = row["Aridity_Index"] * row["Rain_Sep"]
+
     # Vintage outcome
     v = sub[sub.month == 1]["vintage"].values
     if len(v) == 0:
@@ -119,7 +146,11 @@ predictors = [
     "Rain_Sep_Oct",
     "DTR_Aug_Sep",
     "Temp_Apr_Jun",
-    "Rain_Oct_Feb"
+    "Rain_Oct_Feb",
+    "Aridity_Index",
+    "Tmax_June",
+    "Tmax_June_July",
+    "Aridity_x_RainSep"
 ]
 
 selected = []
