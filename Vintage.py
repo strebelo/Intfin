@@ -47,8 +47,6 @@ for y in years:
     row["year"] = y
 
     row["GDD_Apr_Sep"] = sub[sub.month.between(4, 9)]["gdd"].sum()
-    row["GDD_Jul_Aug"] = sub[sub.month.isin([7, 8])]["gdd"].sum()
-
     row["Rain_Sep"] = sub[sub.month == 9]["rain"].sum()
 
     row["Temp_Jul_Aug"] = sub[sub.month.isin([7, 8])]["tmean"].mean()
@@ -73,7 +71,7 @@ for y in years:
     rain_jan_feb = sub[sub.month.isin([1, 2])]["rain"].sum()
     row["Rain_Oct_Feb"] = rain_oct_dec + rain_jan_feb
 
-        # Average temperature from previous October to current August
+    # Average temperature from previous October to current August
     temp_oct_dec = prev[prev.month.isin([10, 11, 12])]["tmean"]
     temp_jan_aug = sub[sub.month.isin([1, 2, 3, 4, 5, 6, 7, 8])]["tmean"]
     temp_oct_aug = pd.concat([temp_oct_dec, temp_jan_aug])
