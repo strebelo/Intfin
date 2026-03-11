@@ -302,3 +302,26 @@ st.dataframe(missed_vintages[["year", "prob"]])
 
 st.header("Predicted vintages not declared")
 st.dataframe(false_vintages[["year", "prob"]])
+
+num_actual_vintages = (results["actual"] == 1).sum()
+num_actual_nonvintages = (results["actual"] == 0).sum()
+
+frac_vintages_misclassified = (
+    len(missed_vintages) / num_actual_vintages
+    if num_actual_vintages > 0 else np.nan
+)
+
+frac_nonvintages_misclassified = (
+    len(false_vintages) / num_actual_nonvintages
+    if num_actual_nonvintages > 0 else np.nan
+)
+
+st.header("Classification error rates")
+st.write("Fraction of vintages misclassified:", frac_vintages_misclassified)
+st.write("Fraction of non-vintages misclassified:", frac_nonvintages_misclassified)
+
+st.header("Missed vintages")
+st.dataframe(missed_vintages[["year", "prob"]])
+
+st.header("Predicted vintages not declared")
+st.dataframe(false_vintages[["year", "prob"]])
