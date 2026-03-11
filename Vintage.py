@@ -222,14 +222,6 @@ summary_table = pd.DataFrame({
 st.dataframe(summary_table)
 
 # ----------------------------------
-# Summary statistics
-# ----------------------------------
-
-st.header("Average of Variables")
-avg_table = year_df.mean(numeric_only=True).to_frame(name="Average")
-st.dataframe(avg_table)
-
-# ----------------------------------
 # Predictions
 # ----------------------------------
 
@@ -347,43 +339,6 @@ st.write(
     f"Non-vintages misclassified: {num_false_vintages} out of {num_actual_nonvintages} "
     f"({frac_nonvintages_misclassified:.2f})"
 )
-
-# ----------------------------------
-# Marginal effect of September rain
-# at average climate
-# ----------------------------------
-
-means = year_df.mean(numeric_only=True)
-
-rain = means.get("Rain_Sep", 0)
-tempjul = means.get("Temp_Jul", 0)
-tempaug = means.get("Temp_Aug", 0)
-aridity = means.get("Aridity_Index", 0)
-
-b = model.params
-
-dz_drain = (
-    b.get("Rain_Sep", 0)
-    + 2 * b.get("RainSep_sq", 0) * rain
-    + b.get("TempJul_x_RainSep", 0) * tempjul
-    + b.get("TempAug_x_RainSep", 0) * tempaug
-    + b.get("Aridity_x_RainSep", 0) * aridity
-    + 2 * b.get("Aridity_x_RainSep_sq", 0) * aridity * rain
-)
-
-Xmean_dict = {}
-for col in X.columns:
-    if col == "const":
-        Xmean_dict[col] = 1.0
-    else:
-        Xmean_dict[col] = means.get(col, 0)
-
-Xmean = pd.DataFrame([Xmean_dict])[X.columns]
-pmean = model.predict(Xmean).iloc[0]
-marginal_effect = pmean * (1 - pmean) * dz_drain
-
-st.header("Marginal Effect of September Rain")
-st.write("Marginal effect evaluated at average climate:", f"{marginal_effect:.4f}")
 
 # ----------------------------------
 # Marginal effect of September rain
