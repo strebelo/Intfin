@@ -280,12 +280,36 @@ fig.add_hline(
 )
 
 fig.update_layout(
-    title="Predicted Probability of Port Vintage Declaration",
-    xaxis_title="Year",
-    yaxis_title="Probability of Vintage",
+    title=dict(
+        text="Predicted Probability of Port Vintage Declaration",
+        x=0.5,
+        xanchor="center"
+    ),
+    xaxis_title=None,
+    yaxis_title=None,
     yaxis=dict(range=[0, 1]),
     hovermode="x unified",
     height=650
+)
+
+fig.add_annotation(
+    text="Probability of Vintage",
+    xref="paper",
+    yref="paper",
+    x=-0.07,
+    y=1.05,
+    showarrow=False,
+    font=dict(size=12)
+)
+
+fig.add_annotation(
+    text="Year",
+    xref="paper",
+    yref="paper",
+    x=0.5,
+    y=1.08,
+    showarrow=False,
+    font=dict(size=12)
 )
 
 st.plotly_chart(fig, use_container_width=True)
