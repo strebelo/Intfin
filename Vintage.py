@@ -101,10 +101,10 @@ for y in years:
     row["Aridity_x_RainSep"] = row["Aridity_Index"] * row["Rain_Sep"]
 
     # Rain in September squared
-row["RainSep_sq"] = row["Rain_Sep"] ** 2
+    row["RainSep_sq"] = row["Rain_Sep"] ** 2
 
-# Aridity x September rain squared
-row["Aridity_x_RainSep_sq"] = row["Aridity_Index"] * row["RainSep_sq"]
+    # Aridity x September rain squared
+    row["Aridity_x_RainSep_sq"] = row["Aridity_Index"] * row["RainSep_sq"]
 
     # Vintage outcome
     v = sub[sub.month == 1]["vintage"].values
