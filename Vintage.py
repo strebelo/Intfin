@@ -316,4 +316,7 @@ frac_nonvintages_misclassified = (
     if num_actual_nonvintages > 0 else np.nan
 )
 
+st.header("Classification error rates")
+st.write("Fraction of vintages misclassified:", frac_vintages_misclassified)
+st.write("Fraction of non-vintages misclassified:", frac_nonvintages_misclassified)
 
