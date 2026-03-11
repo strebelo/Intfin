@@ -236,6 +236,38 @@ st.write("AIC:", model.aic)
 st.write("BIC:", model.bic)
 
 # ----------------------------------
+# Marginal effect of September rain
+# evaluated at average variables
+# ----------------------------------
+
+means = year_df.mean()
+
+rain = means["Rain_Sep"]
+tempjul = means["Temp_Jul"]
+tempjulaug = means["Temp_Jul_Aug"]
+aridity = means["Aridity_Index"]
+
+b = model.params
+
+dz_drain = (
+    b.get("Rain_Sep",0)
+    + 2*b.get("RainSep_sq",0)*rain
+    + b.get("TempJul_x_RainSep",0)*tempjul
+    + b.get("TempJulAug_x_RainSep",0)*tempjulaug
+    + b.get("Aridity_x_RainSep",0)*aridity
+    + 2*b.get("Aridity_x_RainSep_sq",0)*aridity*rain
+)
+
+# predicted probability at averages
+Xmean = sm.add_constant(pd.DataFrame([means[selected]]))
+pmean = model.predict(Xmean)[0]
+
+marginal_effect = pmean * (1 - pmean) * dz_drain
+
+st.header("Marginal Effect of September Rain")
+st.write("Marginal effect evaluated at average climate:", round(marginal_effect,4))
+
+# ----------------------------------
 # Plot probabilities over time
 # ----------------------------------
 
