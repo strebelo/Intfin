@@ -332,31 +332,38 @@ st.write(
 # evaluated at average variables
 # ----------------------------------
 
-means = year_df.mean()
+means = year_df.mean(numeric_only=True)
 
-rain = means["Rain_Sep"]
-tempjul = means["Temp_Jul"]
-tempjulaug = means["Temp_Jul_Aug"]
-aridity = means["Aridity_Index"]
+rain = means.get("Rain_Sep", 0)
+tempjul = means.get("Temp_Jul", 0)
+tempjulaug = means.get("Temp_Jul_Aug", 0)
+aridity = means.get("Aridity_Index", 0)
 
 b = model.params
 
 dz_drain = (
-    b.get("Rain_Sep",0)
-    + 2*b.get("RainSep_sq",0)*rain
-    + b.get("TempJul_x_RainSep",0)*tempjul
-    + b.get("TempJulAug_x_RainSep",0)*tempjulaug
-    + b.get("Aridity_x_RainSep",0)*aridity
-    + 2*b.get("Aridity_x_RainSep_sq",0)*aridity*rain
+    b.get("Rain_Sep", 0)
+    + 2 * b.get("RainSep_sq", 0) * rain
+    + b.get("TempJul_x_RainSep", 0) * tempjul
+    + b.get("TempJulAug_x_RainSep", 0) * tempjulaug
+    + b.get("Aridity_x_RainSep", 0) * aridity
+    + 2 * b.get("Aridity_x_RainSep_sq", 0) * aridity * rain
 )
 
-# predicted probability at averages
-Xmean = sm.add_constant(pd.DataFrame([means[selected]]))
-pmean = model.predict(Xmean)[0]
+# Build prediction row at sample means with exact same columns as X
+Xmean_dict = {}
+
+for col in X.columns:
+    if col == "const":
+        Xmean_dict[col] = 1.0
+    else:
+        Xmean_dict[col] = means.get(col, 0)
+
+Xmean = pd.DataFrame([Xmean_dict])[X.columns]
+
+pmean = model.predict(Xmean).iloc[0]
 
 marginal_effect = pmean * (1 - pmean) * dz_drain
 
 st.header("Marginal Effect of September Rain")
-st.write("Marginal effect evaluated at average climate:", round(marginal_effect,4))
-
-
+st.write("Marginal effect evaluated at average climate:", f"{marginal_effect:.4f}")
