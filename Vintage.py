@@ -160,14 +160,11 @@ default_selected = {
     "Rain_Sep",
     "Temp_Jul",
     "Temp_Aug",
-    "TempJul_x_RainSep",
     "TempAug_x_RainSep",
     "Rain_Apr_May",
-    "Rain_Jun_Aug",
     "Temp_Apr_Jun",
     "Aridity_x_RainSep",
     "Aridity_x_RainSep_sq",
-    "Tmax_June",
     "Tmax_July"
 }
 
