@@ -376,15 +376,12 @@ A_high = df["aridity"].mean() + 2 * df["aridity"].std()
 beta_rain = model.params["rain"]
 beta_inter = model.params["rain_aridity"]
 
-# create observation with mean values
-Xmean = df[feature_cols].mean().to_frame().T
+# create observation with mean values of regressors
+Xmean = X.mean().to_frame().T
 
 # set aridity to mean + 2sd
 Xmean["aridity"] = A_high
 Xmean["rain_aridity"] = Xmean["rain"] * Xmean["aridity"]
-
-# add constant
-Xmean = sm.add_constant(Xmean)
 
 # predicted probability
 p = model.predict(Xmean)[0]
