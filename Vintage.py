@@ -247,38 +247,46 @@ plot_df["actual"] = y
 
 declared = plot_df[plot_df["actual"] == 1].copy()
 
-fig, ax = plt.subplots(figsize=(12, 6))
+fig = go.Figure()
 
-ax.plot(
-    plot_df["year"],
-    plot_df["prob"],
-    linewidth=2.5,
-    label="Predicted probability"
+# blue line: fitted probabilities
+fig.add_trace(go.Scatter(
+    x=plot_df["year"],
+    y=plot_df["prob"],
+    mode="lines",
+    name="Predicted probability",
+    customdata=np.stack([plot_df["year"], plot_df["prob"]], axis=-1),
+    hovertemplate="Year: %{customdata[0]}<br>Probability: %{customdata[1]:.3f}<extra></extra>"
+))
+
+# red dots: declared vintages
+fig.add_trace(go.Scatter(
+    x=declared["year"],
+    y=declared["prob"],
+    mode="markers",
+    name="Declared vintage",
+    marker=dict(color="red", size=9),
+    customdata=np.stack([declared["year"], declared["prob"]], axis=-1),
+    hovertemplate="Year: %{customdata[0]}<br>Probability: %{customdata[1]:.3f}<extra></extra>"
+))
+
+# threshold line
+fig.add_hline(
+    y=threshold,
+    line_dash="dash",
+    annotation_text=f"Threshold = {threshold:.2f}",
+    annotation_position="top left"
 )
 
-ax.axhline(
-    threshold,
-    linestyle="--",
-    linewidth=2,
-    label=f"Threshold = {threshold:.2f}"
+fig.update_layout(
+    title="Predicted Probability of Port Vintage Declaration",
+    xaxis_title="Year",
+    yaxis_title="Probability of Vintage",
+    yaxis=dict(range=[0, 1]),
+    hovermode="x unified"
 )
 
-ax.scatter(
-    declared["year"],
-    declared["prob"],
-    color="red",
-    s=90,
-    zorder=3,
-    label="Declared vintage"
-)
-
-ax.set_xlabel("Year")
-ax.set_ylabel("Probability of Vintage")
-ax.set_title("Predicted Probability of Port Vintage Declaration")
-ax.set_ylim(0, 1)
-ax.legend()
-
-st.pyplot(fig)
+st.plotly_chart(fig, use_container_width=True)
 
 # ----------------------------------
 # Misclassifications
