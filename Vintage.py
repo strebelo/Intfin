@@ -100,6 +100,12 @@ for y in years:
     # Aridity x September rain
     row["Aridity_x_RainSep"] = row["Aridity_Index"] * row["Rain_Sep"]
 
+    # Rain in September squared
+row["RainSep_sq"] = row["Rain_Sep"] ** 2
+
+# Aridity x September rain squared
+row["Aridity_x_RainSep_sq"] = row["Aridity_Index"] * row["RainSep_sq"]
+
     # Vintage outcome
     v = sub[sub.month == 1]["vintage"].values
     if len(v) == 0:
@@ -137,6 +143,7 @@ st.sidebar.header("Choose predictors")
 predictors = [
     "GDD_Apr_Sep",
     "Rain_Sep",
+    "RainSep_sq",
     "Temp_Jul_Aug",
     "Temp_Jul",
     "TempJul_x_RainSep",
@@ -148,9 +155,8 @@ predictors = [
     "Temp_Apr_Jun",
     "Rain_Oct_Feb",
     "Aridity_Index",
-    "Tmax_June",
-    "Tmax_June_July",
-    "Aridity_x_RainSep"
+    "Aridity_x_RainSep",
+    "Aridity_x_RainSep_sq"
 ]
 
 selected = []
