@@ -420,28 +420,34 @@ st.write(f"{ME_rain_1sd:.4f}")
 # ----------------------------------
 # General marginal effects table
 # evaluated at the mean
+# with interactions and quadratic terms handled properly
 # ----------------------------------
 
 def linear_index_derivative(var_name, params, means_dict):
     """
-    Computes dz/d(var_name), allowing for:
+    Computes dz/d(var_name), taking into account:
     - direct linear term
-    - squared term
-    - interaction terms already created in the dataset
+    - own quadratic term
+    - pairwise interactions
+    - interaction with RainSep_sq
     """
 
-    d = params.get(var_name, 0.0)
+    d = 0.0
+
+    # Direct effect
+    d += params.get(var_name, 0.0)
 
     # Own square terms
     square_map = {
         "Rain_Sep": "RainSep_sq",
         "GDD_Apr_Sep": "GDD_Apr_Sep_sq"
     }
+
     if var_name in square_map:
         sq_name = square_map[var_name]
         d += 2 * params.get(sq_name, 0.0) * means_dict.get(var_name, 0.0)
 
-    # Interaction terms
+    # Standard interaction terms
     interaction_map = {
         "Rain_Sep": [
             ("TempJul_x_RainSep", "Temp_Jul"),
@@ -463,14 +469,21 @@ def linear_index_derivative(var_name, params, means_dict):
         for interaction_term, other_var in interaction_map[var_name]:
             d += params.get(interaction_term, 0.0) * means_dict.get(other_var, 0.0)
 
-    # Special interaction with RainSep_sq
+    # Interaction involving Rain_Sep^2:
+    # Aridity_x_RainSep_sq = Aridity_Index * Rain_Sep^2
     if var_name == "Rain_Sep":
-        d += 2 * params.get("Aridity_x_RainSep_sq", 0.0) * \
-             means_dict.get("Aridity_Index", 0.0) * means_dict.get("Rain_Sep", 0.0)
+        d += (
+            2
+            * params.get("Aridity_x_RainSep_sq", 0.0)
+            * means_dict.get("Aridity_Index", 0.0)
+            * means_dict.get("Rain_Sep", 0.0)
+        )
 
     if var_name == "Aridity_Index":
-        d += params.get("Aridity_x_RainSep_sq", 0.0) * \
-             (means_dict.get("Rain_Sep", 0.0) ** 2)
+        d += (
+            params.get("Aridity_x_RainSep_sq", 0.0)
+            * (means_dict.get("Rain_Sep", 0.0) ** 2)
+        )
 
     return d
 
@@ -485,20 +498,52 @@ for col in X.columns:
 Xmean = pd.DataFrame([Xmean_dict])[X.columns]
 p_at_mean = model.predict(Xmean).iloc[0]
 
+# Report marginal effects for the underlying variables,
+# not for constructed terms like RainSep_sq or TempJul_x_RainSep
+base_variables_for_me = [
+    "GDD_Apr_Sep",
+    "Rain_Sep",
+    "Temp_Jul",
+    "Temp_Aug",
+    "Temp_Jul_Aug",
+    "Rain_Apr_May",
+    "Rain_Jun_Aug",
+    "Rain_Sep_Oct",
+    "DTR_Aug_Sep",
+    "Temp_Apr_Jun",
+    "Rain_Oct_Feb",
+    "Aridity_Index",
+    "Tmax_June",
+    "Tmax_July",
+    "Tmax_August",
+    "Tmax_June_July"
+]
+
 me_rows = []
-for var in selected:
-    dzdx = linear_index_derivative(var, model.params, means)
-    me = p_at_mean * (1 - p_at_mean) * dzdx
+for var in base_variables_for_me:
+    if var in year_df.columns:
+        dzdx = linear_index_derivative(var, model.params, means)
+        me = p_at_mean * (1 - p_at_mean) * dzdx
 
-    me_rows.append({
-        "variable": var,
-        "mean_value": means.get(var, np.nan),
-        "dz_dx_at_mean": dzdx,
-        "marginal_effect_at_mean": me
-    })
+        me_rows.append({
+            "variable": var,
+            "mean_value": means.get(var, np.nan),
+            "dz_dx_at_mean": dzdx,
+            "marginal_effect_at_mean": me
+        })
 
-me_table = pd.DataFrame(me_rows).sort_values("marginal_effect_at_mean", key=np.abs, ascending=False)
+me_table = pd.DataFrame(me_rows)
+
+if not me_table.empty:
+    me_table["mean_value"] = me_table["mean_value"].round(3)
+    me_table["dz_dx_at_mean"] = me_table["dz_dx_at_mean"].round(4)
+    me_table["marginal_effect_at_mean"] = me_table["marginal_effect_at_mean"].round(4)
+    me_table = me_table.sort_values(
+        "marginal_effect_at_mean",
+        key=lambda s: np.abs(s),
+        ascending=False
+    )
 
 st.header("Marginal Effects Table")
-st.write("All controls evaluated at their sample means.")
-st.dataframe(me_table)
+st.write("All controls evaluated at their sample means. Interaction and quadratic terms are taken into account.")
+st.dataframe(me_table, use_container_width=True)
