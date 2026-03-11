@@ -50,6 +50,7 @@ for y in years:
 
     row["Temp_Jul"] = sub[sub["month"] == 7]["tmean"].mean()
     row["Temp_Aug"] = sub[sub["month"] == 8]["tmean"].mean()
+    row["Temp_Jul_Aug"] = sub[sub["month"].isin([7, 8])]["tmean"].mean()
 
     row["TempJul_x_RainSep"] = row["Temp_Jul"] * row["Rain_Sep"]
     row["TempAug_x_RainSep"] = row["Temp_Aug"] * row["Rain_Sep"]
@@ -141,6 +142,7 @@ predictors = [
     "RainSep_sq",
     "Temp_Jul",
     "Temp_Aug",
+    "Temp_Jul_Aug",
     "TempJul_x_RainSep",
     "TempAug_x_RainSep",
     "Rain_Apr_May",
