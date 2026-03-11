@@ -56,6 +56,11 @@ for y in years:
     row["Temp_Aug"] = sub[sub["month"] == 8]["tmean"].mean()
     row["Temp_Jul_Aug"] = sub[sub["month"].isin([7, 8])]["tmean"].mean()
 
+    # Minimum temperatures
+    row["Tmin_July"] = sub[sub["month"] == 7]["tmin"].mean()
+    row["Tmin_August"] = sub[sub["month"] == 8]["tmin"].mean()
+    row["Tmin_July_August"] = sub[sub["month"].isin([7, 8])]["tmin"].mean()
+
     row["TempJul_x_RainSep"] = row["Temp_Jul"] * row["Rain_Sep"]
     row["TempAug_x_RainSep"] = row["Temp_Aug"] * row["Rain_Sep"]
 
@@ -154,6 +159,9 @@ predictors = [
     "Temp_Jul",
     "Temp_Aug",
     "Temp_Jul_Aug",
+    "Tmin_July",
+    "Tmin_August",
+    "Tmin_July_August",
     "TempJul_x_RainSep",
     "TempAug_x_RainSep",
     "Rain_Apr_May",
@@ -177,6 +185,8 @@ default_selected = {
     "GDD_Apr_Sep_sq",
     "Temp_Jul",
     "Temp_Aug",
+    "Tmin_July",
+    "Tmin_August",
     "Rain_Apr_May",
     "Rain_Oct_Feb",
     "Aridity_x_RainSep",
@@ -536,6 +546,9 @@ base_variables_for_me = [
     "Temp_Jul",
     "Temp_Aug",
     "Temp_Jul_Aug",
+    "Tmin_July",
+    "Tmin_August",
+    "Tmin_July_August",
     "Rain_Apr_May",
     "Rain_Jun_Aug",
     "Rain_Sep_Oct",
