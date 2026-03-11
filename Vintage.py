@@ -26,6 +26,10 @@ if not all(col in df.columns for col in required_cols):
     st.error("Spreadsheet must contain: year, month, tmax, tmin, rain, vintage")
     st.stop()
 
+# ----------------------------------
+# Monthly constructed variables
+# ----------------------------------
+
 df["tmean"] = (df["tmax"] + df["tmin"]) / 2
 
 base_temp = st.sidebar.slider("GDD Base Temperature", 5, 15, 10)
@@ -67,9 +71,9 @@ for y in years:
     row["Temp_Apr_Jun"] = sub[sub["month"].isin([4, 5, 6])]["tmean"].mean()
 
     # Rain Oct-Feb
-    rain_oct_dec = prev[prev["month"].isin([10, 11, 12])]["rain"].sum()
+    rain_oct_dec_prev = prev[prev["month"].isin([10, 11, 12])]["rain"].sum()
     rain_jan_feb = sub[sub["month"].isin([1, 2])]["rain"].sum()
-    row["Rain_Oct_Feb"] = rain_oct_dec + rain_jan_feb
+    row["Rain_Oct_Feb"] = rain_oct_dec_prev + rain_jan_feb
 
     # Average temperature from previous October to current August
     temp_oct_dec = prev[prev["month"].isin([10, 11, 12])]["tmean"]
@@ -82,7 +86,7 @@ for y in years:
     rain_jan_aug = sub[sub["month"].isin([1, 2, 3, 4, 5, 6, 7, 8])]["rain"].sum()
     rain_oct_aug = rain_oct_dec + rain_jan_aug
 
-    # Aridity index = 100 * average temperature Oct-Aug / rainfall Oct-Aug
+    # Aridity index
     if rain_oct_aug > 0:
         row["Aridity_Index"] = 100 * avg_temp_oct_aug / rain_oct_aug
     else:
@@ -101,7 +105,7 @@ for y in years:
     row["Tmax_August"] = sub[sub["month"] == 8]["tmax"].mean()
     row["Tmax_June_July"] = sub[sub["month"].isin([6, 7])]["tmax"].mean()
 
-    # GDD square
+    # GDD squared
     row["GDD_Apr_Sep_sq"] = row["GDD_Apr_Sep"] ** 2
 
     # Vintage outcome
@@ -125,8 +129,10 @@ target_mode = st.sidebar.radio(
 )
 
 if target_mode == "Classic only":
+    # Only classic vintages count as 1
     y = (year_df["vintage"] == 1).astype(int)
 else:
+    # Any positive vintage code counts as 1
     y = (year_df["vintage"] > 0).astype(int)
 
 # ----------------------------------
@@ -156,7 +162,8 @@ predictors = [
     "Aridity_x_RainSep_sq",
     "Tmax_June",
     "Tmax_July",
-    "Tmax_August"
+    "Tmax_August",
+    "Tmax_June_July"
 ]
 
 default_selected = {
@@ -341,36 +348,95 @@ st.write(
 )
 
 # ----------------------------------
+# Means used for marginal effects
+# ----------------------------------
+
+means = X.drop(columns="const", errors="ignore").mean()
+
+# ----------------------------------
 # Marginal effect of September rain
 # at Aridity = mean + 1 SD
 # ----------------------------------
 
+rain = means.get("Rain_Sep", year_df["Rain_Sep"].mean())
+tempjul = means.get("Temp_Jul", year_df["Temp_Jul"].mean())
+tempaug = means.get("Temp_Aug", year_df["Temp_Aug"].mean())
+
 A_1sd = year_df["Aridity_Index"].mean() + year_df["Aridity_Index"].std()
 
 dz_drain_1sd = (
-    model.params.get("Rain_Sep", 0)
-    + 2 * model.params.get("RainSep_sq", 0) * rain
-    + model.params.get("TempJul_x_RainSep", 0) * tempjul
-    + model.params.get("TempAug_x_RainSep", 0) * tempaug
-    + model.params.get("Aridity_x_RainSep", 0) * A_1sd
-    + 2 * model.params.get("Aridity_x_RainSep_sq", 0) * A_1sd * rain
+    model.params.get("Rain_Sep", 0.0)
+    + 2 * model.params.get("RainSep_sq", 0.0) * rain
+    + model.params.get("TempJul_x_RainSep", 0.0) * tempjul
+    + model.params.get("TempAug_x_RainSep", 0.0) * tempaug
+    + model.params.get("Aridity_x_RainSep", 0.0) * A_1sd
+    + 2 * model.params.get("Aridity_x_RainSep_sq", 0.0) * A_1sd * rain
 )
 
-X1 = X.mean().to_frame().T
-if "const" in X1.columns:
-    X1["const"] = 1.0
-if "Aridity_Index" in X1.columns:
-    X1["Aridity_Index"] = A_1sd
-if "Aridity_x_RainSep" in X1.columns:
-    X1["Aridity_x_RainSep"] = A_1sd * rain
-if "Aridity_x_RainSep_sq" in X1.columns:
-    X1["Aridity_x_RainSep_sq"] = A_1sd * (rain ** 2)
+X1_dict = {}
+for col in X.columns:
+    if col == "const":
+        X1_dict[col] = 1.0
+    else:
+        X1_dict[col] = means.get(col, year_df[col].mean() if col in year_df.columns else 0.0)
 
-p1 = model.predict(X1[X.columns]).iloc[0]
+# Override components needed for this counterfactual point
+if "Rain_Sep" in X1_dict:
+    X1_dict["Rain_Sep"] = rain
+if "Temp_Jul" in X1_dict:
+    X1_dict["Temp_Jul"] = tempjul
+if "Temp_Aug" in X1_dict:
+    X1_dict["Temp_Aug"] = tempaug
+if "RainSep_sq" in X1_dict:
+    X1_dict["RainSep_sq"] = rain ** 2
+if "Aridity_Index" in X1_dict:
+    X1_dict["Aridity_Index"] = A_1sd
+if "TempJul_x_RainSep" in X1_dict:
+    X1_dict["TempJul_x_RainSep"] = tempjul * rain
+if "TempAug_x_RainSep" in X1_dict:
+    X1_dict["TempAug_x_RainSep"] = tempaug * rain
+if "Aridity_x_RainSep" in X1_dict:
+    X1_dict["Aridity_x_RainSep"] = A_1sd * rain
+if "Aridity_x_RainSep_sq" in X1_dict:
+    X1_dict["Aridity_x_RainSep_sq"] = A_1sd * (rain ** 2)
+
+X1 = pd.DataFrame([X1_dict])[X.columns]
+p1 = model.predict(X1).iloc[0]
 ME_rain_1sd = p1 * (1 - p1) * dz_drain_1sd
 
 st.header("Marginal Effect of September Rain at Aridity = Mean + 1 SD")
 st.write(f"{ME_rain_1sd:.4f}")
+
+# ----------------------------------
+# Marginal effect of September rain
+# at Aridity = mean + 2 SD
+# ----------------------------------
+
+A_2sd = year_df["Aridity_Index"].mean() + 2 * year_df["Aridity_Index"].std()
+
+dz_drain_2sd = (
+    model.params.get("Rain_Sep", 0.0)
+    + 2 * model.params.get("RainSep_sq", 0.0) * rain
+    + model.params.get("TempJul_x_RainSep", 0.0) * tempjul
+    + model.params.get("TempAug_x_RainSep", 0.0) * tempaug
+    + model.params.get("Aridity_x_RainSep", 0.0) * A_2sd
+    + 2 * model.params.get("Aridity_x_RainSep_sq", 0.0) * A_2sd * rain
+)
+
+X2_dict = X1_dict.copy()
+if "Aridity_Index" in X2_dict:
+    X2_dict["Aridity_Index"] = A_2sd
+if "Aridity_x_RainSep" in X2_dict:
+    X2_dict["Aridity_x_RainSep"] = A_2sd * rain
+if "Aridity_x_RainSep_sq" in X2_dict:
+    X2_dict["Aridity_x_RainSep_sq"] = A_2sd * (rain ** 2)
+
+X2 = pd.DataFrame([X2_dict])[X.columns]
+p2 = model.predict(X2).iloc[0]
+ME_rain_2sd = p2 * (1 - p2) * dz_drain_2sd
+
+st.header("Marginal Effect of September Rain at Aridity = Mean + 2 SD")
+st.write(f"{ME_rain_2sd:.4f}")
 
 # ----------------------------------
 # General marginal effects table
@@ -379,14 +445,6 @@ st.write(f"{ME_rain_1sd:.4f}")
 # ----------------------------------
 
 def linear_index_derivative(var_name, params, means_dict):
-    """
-    Computes dz/d(var_name), taking into account:
-    - direct linear term
-    - own quadratic term
-    - pairwise interactions
-    - interaction with RainSep_sq
-    """
-
     d = 0.0
 
     # Direct effect
@@ -424,8 +482,7 @@ def linear_index_derivative(var_name, params, means_dict):
         for interaction_term, other_var in interaction_map[var_name]:
             d += params.get(interaction_term, 0.0) * means_dict.get(other_var, 0.0)
 
-    # Interaction involving Rain_Sep^2:
-    # Aridity_x_RainSep_sq = Aridity_Index * Rain_Sep^2
+    # Interaction involving Aridity * Rain_Sep^2
     if var_name == "Rain_Sep":
         d += (
             2
@@ -442,7 +499,7 @@ def linear_index_derivative(var_name, params, means_dict):
 
     return d
 
-# Build mean covariate vector
+# Build mean covariate vector consistent with X
 Xmean_dict = {}
 for col in X.columns:
     if col == "const":
@@ -450,11 +507,29 @@ for col in X.columns:
     else:
         Xmean_dict[col] = means.get(col, 0.0)
 
+# Keep constructed terms internally consistent if they are present
+rain_mean = Xmean_dict.get("Rain_Sep", means.get("Rain_Sep", 0.0))
+tempjul_mean = Xmean_dict.get("Temp_Jul", means.get("Temp_Jul", 0.0))
+tempaug_mean = Xmean_dict.get("Temp_Aug", means.get("Temp_Aug", 0.0))
+aridity_mean = Xmean_dict.get("Aridity_Index", means.get("Aridity_Index", 0.0))
+gdd_mean = Xmean_dict.get("GDD_Apr_Sep", means.get("GDD_Apr_Sep", 0.0))
+
+if "RainSep_sq" in Xmean_dict:
+    Xmean_dict["RainSep_sq"] = rain_mean ** 2
+if "GDD_Apr_Sep_sq" in Xmean_dict:
+    Xmean_dict["GDD_Apr_Sep_sq"] = gdd_mean ** 2
+if "TempJul_x_RainSep" in Xmean_dict:
+    Xmean_dict["TempJul_x_RainSep"] = tempjul_mean * rain_mean
+if "TempAug_x_RainSep" in Xmean_dict:
+    Xmean_dict["TempAug_x_RainSep"] = tempaug_mean * rain_mean
+if "Aridity_x_RainSep" in Xmean_dict:
+    Xmean_dict["Aridity_x_RainSep"] = aridity_mean * rain_mean
+if "Aridity_x_RainSep_sq" in Xmean_dict:
+    Xmean_dict["Aridity_x_RainSep_sq"] = aridity_mean * (rain_mean ** 2)
+
 Xmean = pd.DataFrame([Xmean_dict])[X.columns]
 p_at_mean = model.predict(Xmean).iloc[0]
 
-# Report marginal effects for the underlying variables,
-# not for constructed terms like RainSep_sq or TempJul_x_RainSep
 base_variables_for_me = [
     "GDD_Apr_Sep",
     "Rain_Sep",
@@ -477,12 +552,12 @@ base_variables_for_me = [
 me_rows = []
 for var in base_variables_for_me:
     if var in year_df.columns:
-        dzdx = linear_index_derivative(var, model.params, means)
+        dzdx = linear_index_derivative(var, model.params, Xmean_dict)
         me = p_at_mean * (1 - p_at_mean) * dzdx
 
         me_rows.append({
             "variable": var,
-            "mean_value": means.get(var, np.nan),
+            "mean_value": Xmean_dict.get(var, np.nan),
             "dz_dx_at_mean": dzdx,
             "marginal_effect_at_mean": me
         })
@@ -499,6 +574,6 @@ if not me_table.empty:
         ascending=False
     )
 
-st.header("Marginal Effects Table")
-st.write("All controls evaluated at their sample means. Interaction and quadratic terms are taken into account.")
-st.dataframe(me_table, use_container_width=True)
+    st.header("Marginal Effects Table")
+    st.write("All controls evaluated at their sample means. Interaction and quadratic terms are taken into account.")
+    st.dataframe(me_table, use_container_width=True)
