@@ -256,6 +256,8 @@ ax.legend()
 
 st.pyplot(fig)
 
+st.write("Average Aridity Index:", year_df["Aridity_Index"].mean())
+
 # ----------------------------------
 # Misclassifications
 # ----------------------------------
