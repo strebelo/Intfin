@@ -166,7 +166,6 @@ default_selected = {
     "Rain_Oct_Feb",
     "Aridity_x_RainSep",
     "Tmax_July",
-    "Tmax_August"
 }
 
 selected = []
