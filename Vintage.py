@@ -68,6 +68,11 @@ for y in years:
         sub[sub["month"].isin([8, 9])]["tmin"]
     ).mean()
 
+     row["DTR_July"] = (
+        sub[sub["month"].isin([7)]["tmax"] -
+        sub[sub["month"].isin([7))]["tmin"]
+    ).mean()
+
     row["Temp_Apr_Jun"] = sub[sub["month"].isin([4, 5, 6])]["tmean"].mean()
 
     # Rain Oct-Feb
@@ -164,6 +169,7 @@ predictors = [
     "Tmax_July",
     "Tmax_August",
     "Tmax_June_July"
+    "DTR_July"
 ]
 
 default_selected = {
