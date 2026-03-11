@@ -29,58 +29,56 @@ if not all(col in df.columns for col in required_cols):
 df["tmean"] = (df["tmax"] + df["tmin"]) / 2
 
 base_temp = st.sidebar.slider("GDD Base Temperature", 5, 15, 10)
-
 df["gdd"] = np.maximum(df["tmean"] - base_temp, 0)
 
 # ----------------------------------
 # Construct annual variables
 # ----------------------------------
 
-years = sorted(df.year.unique())
+years = sorted(df["year"].unique())
 rows = []
 
 for y in years:
-    sub = df[df.year == y]
-    prev = df[df.year == y - 1]
+    sub = df[df["year"] == y]
+    prev = df[df["year"] == y - 1]
 
     row = {}
     row["year"] = y
 
-    row["GDD_Apr_Sep"] = sub[sub.month.between(4, 9)]["gdd"].sum()
-    row["Rain_Sep"] = sub[sub.month == 9]["rain"].sum()
+    row["GDD_Apr_Sep"] = sub[sub["month"].between(4, 9)]["gdd"].sum()
+    row["Rain_Sep"] = sub[sub["month"] == 9]["rain"].sum()
 
-    row["Temp_Jul_Aug"] = sub[sub.month.isin([7, 8])]["tmean"].mean()
-    row["Temp_Jul"] = sub[sub.month == 7]["tmean"].mean()
+    row["Temp_Jul_Aug"] = sub[sub["month"].isin([7, 8])]["tmean"].mean()
+    row["Temp_Jul"] = sub[sub["month"] == 7]["tmean"].mean()
 
     row["TempJul_x_RainSep"] = row["Temp_Jul"] * row["Rain_Sep"]
     row["TempJulAug_x_RainSep"] = row["Temp_Jul_Aug"] * row["Rain_Sep"]
 
-    row["Rain_Apr_May"] = sub[sub.month.isin([4, 5])]["rain"].sum()
-    row["Rain_Jun_Aug"] = sub[sub.month.isin([6, 7, 8])]["rain"].sum()
-    row["Rain_Sep_Oct"] = sub[sub.month.isin([9, 10])]["rain"].sum()
+    row["Rain_Apr_May"] = sub[sub["month"].isin([4, 5])]["rain"].sum()
+    row["Rain_Jun_Aug"] = sub[sub["month"].isin([6, 7, 8])]["rain"].sum()
+    row["Rain_Sep_Oct"] = sub[sub["month"].isin([9, 10])]["rain"].sum()
 
     row["DTR_Aug_Sep"] = (
-        sub[sub.month.isin([8, 9])]["tmax"] -
-        sub[sub.month.isin([8, 9])]["tmin"]
+        sub[sub["month"].isin([8, 9])]["tmax"] -
+        sub[sub["month"].isin([8, 9])]["tmin"]
     ).mean()
 
-    row["Temp_Apr_Jun"] = sub[sub.month.isin([4, 5, 6])]["tmean"].mean()
+    row["Temp_Apr_Jun"] = sub[sub["month"].isin([4, 5, 6])]["tmean"].mean()
 
     # Rain Oct-Feb
-    rain_oct_dec = prev[prev.month.isin([10, 11, 12])]["rain"].sum()
-    rain_jan_feb = sub[sub.month.isin([1, 2])]["rain"].sum()
+    rain_oct_dec = prev[prev["month"].isin([10, 11, 12])]["rain"].sum()
+    rain_jan_feb = sub[sub["month"].isin([1, 2])]["rain"].sum()
     row["Rain_Oct_Feb"] = rain_oct_dec + rain_jan_feb
 
     # Average temperature from previous October to current August
-    temp_oct_dec = prev[prev.month.isin([10, 11, 12])]["tmean"]
-    temp_jan_aug = sub[sub.month.isin([1, 2, 3, 4, 5, 6, 7, 8])]["tmean"]
+    temp_oct_dec = prev[prev["month"].isin([10, 11, 12])]["tmean"]
+    temp_jan_aug = sub[sub["month"].isin([1, 2, 3, 4, 5, 6, 7, 8])]["tmean"]
     temp_oct_aug = pd.concat([temp_oct_dec, temp_jan_aug])
-
     avg_temp_oct_aug = temp_oct_aug.mean()
 
     # Rainfall from previous October to current August
-    rain_oct_dec = prev[prev.month.isin([10, 11, 12])]["rain"].sum()
-    rain_jan_aug = sub[sub.month.isin([1, 2, 3, 4, 5, 6, 7, 8])]["rain"].sum()
+    rain_oct_dec = prev[prev["month"].isin([10, 11, 12])]["rain"].sum()
+    rain_jan_aug = sub[sub["month"].isin([1, 2, 3, 4, 5, 6, 7, 8])]["rain"].sum()
     rain_oct_aug = rain_oct_dec + rain_jan_aug
 
     # Aridity index = 100 * average temperature Oct-Aug / rainfall Oct-Aug
@@ -89,38 +87,24 @@ for y in years:
     else:
         row["Aridity_Index"] = np.nan
 
-    # Tmax in June
-    row["Tmax_June"] = sub[sub.month == 6]["tmax"].mean()
-
-    # Tmax in June and July
-    row["Tmax_June_July"] = sub[sub.month.isin([6, 7])]["tmax"].mean()
-
-    # Aridity x September rain
-    row["Aridity_x_RainSep"] = row["Aridity_Index"] * row["Rain_Sep"]
-
-    # Rain in September squared
+    # September rain squared
     row["RainSep_sq"] = row["Rain_Sep"] ** 2
 
-    # Aridity x September rain squared
+    # Aridity interactions
+    row["Aridity_x_RainSep"] = row["Aridity_Index"] * row["Rain_Sep"]
     row["Aridity_x_RainSep_sq"] = row["Aridity_Index"] * row["RainSep_sq"]
 
-    # Max temperature in June
-    row["Tmax_June"] = sub[sub.month == 6]["tmax"].mean()
+    # Max temperatures
+    row["Tmax_June"] = sub[sub["month"] == 6]["tmax"].mean()
+    row["Tmax_July"] = sub[sub["month"] == 7]["tmax"].mean()
+    row["Tmax_June_July"] = sub[sub["month"].isin([6, 7])]["tmax"].mean()
 
-    # Max temperature in July
-    row["Tmax_July"] = sub[sub.month == 7]["tmax"].mean()
-    
-    row["GDD_Apr_Sep"] = sub[sub.month.between(4, 9)]["gdd"].sum()
-
-    # square of growing degree days
+    # GDD square
     row["GDD_Apr_Sep_sq"] = row["GDD_Apr_Sep"] ** 2
 
     # Vintage outcome
-    v = sub[sub.month == 1]["vintage"].values
-    if len(v) == 0:
-        row["vintage"] = np.nan
-    else:
-        row["vintage"] = v[0]
+    v = sub[sub["month"] == 1]["vintage"].values
+    row["vintage"] = v[0] if len(v) > 0 else np.nan
 
     rows.append(row)
 
@@ -172,7 +156,6 @@ predictors = [
 ]
 
 selected = []
-
 for p in predictors:
     if st.sidebar.checkbox(p, True):
         selected.append(p)
@@ -181,18 +164,36 @@ if len(selected) == 0:
     st.warning("Select at least one variable")
     st.stop()
 
-X = year_df[selected]
-X = sm.add_constant(X)
+# ----------------------------------
+# Prediction settings
+# ----------------------------------
+
+st.sidebar.header("Prediction Settings")
+
+threshold = st.sidebar.slider(
+    "Vintage prediction threshold",
+    min_value=0.0,
+    max_value=1.0,
+    value=0.50,
+    step=0.01
+)
 
 # ----------------------------------
-# Run logit
+# Build X and run logit
 # ----------------------------------
+
+X = year_df[selected].copy()
+X = sm.add_constant(X, has_constant="add")
 
 try:
     model = sm.Logit(y, X).fit(disp=0)
 except Exception as e:
     st.error(f"Model could not be estimated: {e}")
     st.stop()
+
+# ----------------------------------
+# Model estimates
+# ----------------------------------
 
 st.header("Model Estimates")
 
@@ -205,13 +206,11 @@ summary_table = pd.DataFrame({
 st.dataframe(summary_table)
 
 # ----------------------------------
-# Summary statistics (averages)
+# Summary statistics
 # ----------------------------------
 
 st.header("Average of Variables")
-
 avg_table = year_df.mean(numeric_only=True).to_frame(name="Average")
-
 st.dataframe(avg_table)
 
 # ----------------------------------
@@ -219,7 +218,7 @@ st.dataframe(avg_table)
 # ----------------------------------
 
 probs = model.predict(X)
-pred = (probs > 0.5).astype(int)
+pred = (probs > threshold).astype(int)
 
 accuracy = accuracy_score(y, pred)
 
@@ -234,6 +233,7 @@ st.write("ROC AUC:", auc)
 st.write("Pseudo R2:", model.prsquared)
 st.write("AIC:", model.aic)
 st.write("BIC:", model.bic)
+st.write("Prediction threshold:", f"{threshold:.2f}")
 
 # ----------------------------------
 # Plot probabilities over time
@@ -245,12 +245,10 @@ plot_df = year_df.copy()
 plot_df["prob"] = probs
 plot_df["actual"] = y
 
-# declared vintages only
 declared = plot_df[plot_df["actual"] == 1].copy()
 
 fig, ax = plt.subplots(figsize=(12, 6))
 
-# blue line: fitted logit probabilities by year
 ax.plot(
     plot_df["year"],
     plot_df["prob"],
@@ -258,15 +256,13 @@ ax.plot(
     label="Predicted probability"
 )
 
-# dashed line at 50%
 ax.axhline(
-    0.5,
+    threshold,
     linestyle="--",
     linewidth=2,
-    label="50% threshold"
+    label=f"Threshold = {threshold:.2f}"
 )
 
-# red dots only for declared vintages, at their predicted probabilities
 ax.scatter(
     declared["year"],
     declared["prob"],
@@ -278,12 +274,11 @@ ax.scatter(
 
 ax.set_xlabel("Year")
 ax.set_ylabel("Probability of Vintage")
-ax.set_title("Predicted Probability of Classic Port Vintages")
+ax.set_title("Predicted Probability of Port Vintage Declaration")
 ax.set_ylim(0, 1)
 ax.legend()
 
 st.pyplot(fig)
-
 
 # ----------------------------------
 # Misclassifications
@@ -294,8 +289,8 @@ results["prob"] = probs
 results["prediction"] = pred
 results["actual"] = y
 
-missed_vintages = results[(results.actual == 1) & (results.prediction == 0)]
-false_vintages = results[(results.actual == 0) & (results.prediction == 1)]
+missed_vintages = results[(results["actual"] == 1) & (results["prediction"] == 0)]
+false_vintages = results[(results["actual"] == 0) & (results["prediction"] == 1)]
 
 st.header("Missed vintages")
 st.dataframe(missed_vintages[["year", "prob"]])
@@ -321,7 +316,6 @@ st.write(
     "Fraction of vintages misclassified:",
     f"{frac_vintages_misclassified:.2f}"
 )
-
 st.write(
     "Fraction of non-vintages misclassified:",
     f"{frac_nonvintages_misclassified:.2f}"
@@ -329,7 +323,7 @@ st.write(
 
 # ----------------------------------
 # Marginal effect of September rain
-# evaluated at average variables
+# at average climate
 # ----------------------------------
 
 means = year_df.mean(numeric_only=True)
@@ -350,9 +344,7 @@ dz_drain = (
     + 2 * b.get("Aridity_x_RainSep_sq", 0) * aridity * rain
 )
 
-# Build prediction row at sample means with exact same columns as X
 Xmean_dict = {}
-
 for col in X.columns:
     if col == "const":
         Xmean_dict[col] = 1.0
@@ -360,9 +352,7 @@ for col in X.columns:
         Xmean_dict[col] = means.get(col, 0)
 
 Xmean = pd.DataFrame([Xmean_dict])[X.columns]
-
 pmean = model.predict(Xmean).iloc[0]
-
 marginal_effect = pmean * (1 - pmean) * dz_drain
 
 st.header("Marginal Effect of September Rain")
@@ -370,37 +360,79 @@ st.write("Marginal effect evaluated at average climate:", f"{marginal_effect:.4f
 
 # ----------------------------------
 # Marginal effect of September rain
-# when Aridity_Index = mean + 1 std
+# at Aridity = mean + 1 SD
 # ----------------------------------
 
-means = year_df.mean(numeric_only=True)
 A_1sd = year_df["Aridity_Index"].mean() + year_df["Aridity_Index"].std()
-
-rain_mean = means.get("Rain_Sep", 0)
-tempjul = means.get("Temp_Jul", 0)
-tempjulaug = means.get("Temp_Jul_Aug", 0)
 
 dz_drain_1sd = (
     model.params.get("Rain_Sep", 0)
-    + 2 * model.params.get("RainSep_sq", 0) * rain_mean
+    + 2 * model.params.get("RainSep_sq", 0) * rain
     + model.params.get("TempJul_x_RainSep", 0) * tempjul
     + model.params.get("TempJulAug_x_RainSep", 0) * tempjulaug
     + model.params.get("Aridity_x_RainSep", 0) * A_1sd
-    + 2 * model.params.get("Aridity_x_RainSep_sq", 0) * A_1sd * rain_mean
+    + 2 * model.params.get("Aridity_x_RainSep_sq", 0) * A_1sd * rain
 )
 
-# build prediction row
 X1 = X.mean().to_frame().T
 if "Aridity_Index" in X1.columns:
     X1["Aridity_Index"] = A_1sd
 if "Aridity_x_RainSep" in X1.columns:
-    X1["Aridity_x_RainSep"] = A_1sd * rain_mean
+    X1["Aridity_x_RainSep"] = A_1sd * rain
 if "Aridity_x_RainSep_sq" in X1.columns:
-    X1["Aridity_x_RainSep_sq"] = A_1sd * rain_mean**2
+    X1["Aridity_x_RainSep_sq"] = A_1sd * (rain ** 2)
 
 p1 = model.predict(X1[X.columns]).iloc[0]
-
 ME_rain_1sd = p1 * (1 - p1) * dz_drain_1sd
 
 st.header("Marginal Effect of September Rain at Aridity = Mean + 1 SD")
 st.write(f"{ME_rain_1sd:.4f}")
+
+# ----------------------------------
+# Plot marginal effect of September rain vs aridity
+# ----------------------------------
+
+st.header("Marginal Effect of September Rain vs Aridity")
+
+if year_df["Aridity_Index"].notna().sum() > 1:
+    arid_vals = np.linspace(
+        year_df["Aridity_Index"].min(),
+        year_df["Aridity_Index"].max(),
+        50
+    )
+
+    me_vals = []
+
+    for A in arid_vals:
+        dz = (
+            model.params.get("Rain_Sep", 0)
+            + 2 * model.params.get("RainSep_sq", 0) * rain
+            + model.params.get("TempJul_x_RainSep", 0) * tempjul
+            + model.params.get("TempJulAug_x_RainSep", 0) * tempjulaug
+            + model.params.get("Aridity_x_RainSep", 0) * A
+            + 2 * model.params.get("Aridity_x_RainSep_sq", 0) * A * rain
+        )
+
+        Xtmp = X.mean().to_frame().T
+        if "Aridity_Index" in Xtmp.columns:
+            Xtmp["Aridity_Index"] = A
+        if "Aridity_x_RainSep" in Xtmp.columns:
+            Xtmp["Aridity_x_RainSep"] = A * rain
+        if "Aridity_x_RainSep_sq" in Xtmp.columns:
+            Xtmp["Aridity_x_RainSep_sq"] = A * (rain ** 2)
+
+        p = model.predict(Xtmp[X.columns]).iloc[0]
+        me_vals.append(p * (1 - p) * dz)
+
+    fig2, ax2 = plt.subplots(figsize=(10, 5))
+    ax2.plot(arid_vals, me_vals, linewidth=2)
+    ax2.axhline(0, linestyle="--", linewidth=1.5)
+    ax2.set_xlabel("Aridity Index")
+    ax2.set_ylabel("Marginal Effect of September Rain")
+    ax2.set_title("Marginal Effect of Rain vs Aridity")
+    st.pyplot(fig2)
+
+    if not any(v in X.columns for v in ["Aridity_Index", "Aridity_x_RainSep", "Aridity_x_RainSep_sq"]):
+        st.write("Note: aridity was not selected in the model, so the marginal effect curve is flat or nearly flat.")
+else:
+    st.write("Not enough variation in Aridity_Index to plot the marginal effect.")
