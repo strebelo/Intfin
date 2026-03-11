@@ -183,14 +183,11 @@ predictors = [
 default_selected = {
     "GDD_Apr_Sep",
     "GDD_Apr_Sep_sq",
+    "Rain_Sep",
     "Temp_Jul",
     "Temp_Aug",
-    "Tmin_July",
-    "Tmin_August",
     "Rain_Apr_May",
     "Rain_Oct_Feb",
-    "Aridity_x_RainSep",
-    "Tmax_July",
     "Tmax_August",
     "DTR_July"
 }
