@@ -14,48 +14,52 @@ st.set_page_config(
     layout="wide"
 )
 
-# Based on insights by viticulturist António Magalhães
+# ----------------------------------
+# Title
+# ----------------------------------
 
 st.title("Port Vintage Declaration Prediction")
 
+# Based on insights by viticulturist António Magalhães
+
 # ----------------------------------
-# Sidebar: upload and general settings
+# Sidebar: upload only
 # ----------------------------------
 
 st.sidebar.header("Upload Data")
-
 uploaded_file = st.sidebar.file_uploader("Upload Excel File", type=["xlsx"])
 
 if uploaded_file is None:
     st.info("Please upload an Excel file to begin.")
     st.stop()
 
+# ----------------------------------
+# Read data
+# ----------------------------------
+
 df = pd.read_excel(uploaded_file)
 
-# ----------------------------------
-# Check required columns
-# ----------------------------------
-
 required_cols = ["year", "month", "tmax", "tmin", "rain", "vintage"]
-
 if not all(col in df.columns for col in required_cols):
     st.error("Spreadsheet must contain: year, month, tmax, tmin, rain, vintage")
     st.stop()
 
 # ----------------------------------
-# Raw data preview
+# Main-page controls layout
 # ----------------------------------
 
-with st.expander("Raw data preview", expanded=False):
-    st.dataframe(df.head(), use_container_width=True)
+left_col, right_col = st.columns([2.2, 1.2])
+
+with right_col:
+    st.subheader("Model Controls")
+
+    base_temp = st.slider("GDD Base Temperature", 5, 15, 10)
 
 # ----------------------------------
 # Monthly constructed variables
 # ----------------------------------
 
 df["tmean"] = (df["tmax"] + df["tmin"]) / 2
-
-base_temp = st.sidebar.slider("GDD Base Temperature", 5, 15, 10)
 df["gdd"] = np.maximum(df["tmean"] - base_temp, 0)
 
 # ----------------------------------
@@ -72,21 +76,17 @@ for y in years:
     row = {}
     row["year"] = y
 
-    # Growing degree days
     row["GDD_Apr_Sep"] = sub[sub["month"].between(4, 9)]["gdd"].sum()
-
     row["Rain_Sep"] = sub[sub["month"] == 9]["rain"].sum()
 
     row["Temp_Jul"] = sub[sub["month"] == 7]["tmean"].mean()
     row["Temp_Aug"] = sub[sub["month"] == 8]["tmean"].mean()
     row["Temp_Jul_Aug"] = sub[sub["month"].isin([7, 8])]["tmean"].mean()
 
-    # Minimum temperatures
     row["Tmin_July"] = sub[sub["month"] == 7]["tmin"].mean()
     row["Tmin_August"] = sub[sub["month"] == 8]["tmin"].mean()
     row["Tmin_July_August"] = sub[sub["month"].isin([7, 8])]["tmin"].mean()
 
-    # Rain interactions
     row["TempJul_x_RainSep"] = row["Temp_Jul"] * row["Rain_Sep"]
     row["TempAug_x_RainSep"] = row["Temp_Aug"] * row["Rain_Sep"]
 
@@ -94,7 +94,6 @@ for y in years:
     row["Rain_Jun_Aug"] = sub[sub["month"].isin([6, 7, 8])]["rain"].sum()
     row["Rain_Sep_Oct"] = sub[sub["month"].isin([9, 10])]["rain"].sum()
 
-    # Diurnal temperature range
     aug_sep = sub[sub["month"].isin([8, 9])]
     july = sub[sub["month"] == 7]
 
@@ -103,45 +102,35 @@ for y in years:
 
     row["Temp_Apr_Jun"] = sub[sub["month"].isin([4, 5, 6])]["tmean"].mean()
 
-    # Rain Oct-Feb
     rain_oct_dec_prev = prev[prev["month"].isin([10, 11, 12])]["rain"].sum()
     rain_jan_feb = sub[sub["month"].isin([1, 2])]["rain"].sum()
     row["Rain_Oct_Feb"] = rain_oct_dec_prev + rain_jan_feb
 
-    # Average temperature from previous October to current August
     temp_oct_dec = prev[prev["month"].isin([10, 11, 12])]["tmean"]
     temp_jan_aug = sub[sub["month"].isin([1, 2, 3, 4, 5, 6, 7, 8])]["tmean"]
     temp_oct_aug = pd.concat([temp_oct_dec, temp_jan_aug])
     avg_temp_oct_aug = temp_oct_aug.mean()
 
-    # Rainfall from previous October to current August
     rain_oct_dec = prev[prev["month"].isin([10, 11, 12])]["rain"].sum()
     rain_jan_aug = sub[sub["month"].isin([1, 2, 3, 4, 5, 6, 7, 8])]["rain"].sum()
     rain_oct_aug = rain_oct_dec + rain_jan_aug
 
-    # Aridity index
     if rain_oct_aug > 0:
         row["Aridity_Index"] = 100 * avg_temp_oct_aug / rain_oct_aug
     else:
         row["Aridity_Index"] = np.nan
 
-    # September rain squared
     row["RainSep_sq"] = row["Rain_Sep"] ** 2
-
-    # Aridity interactions
     row["Aridity_x_RainSep"] = row["Aridity_Index"] * row["Rain_Sep"]
     row["Aridity_x_RainSep_sq"] = row["Aridity_Index"] * row["RainSep_sq"]
 
-    # Max temperatures
     row["Tmax_June"] = sub[sub["month"] == 6]["tmax"].mean()
     row["Tmax_July"] = sub[sub["month"] == 7]["tmax"].mean()
     row["Tmax_August"] = sub[sub["month"] == 8]["tmax"].mean()
     row["Tmax_June_July"] = sub[sub["month"].isin([6, 7])]["tmax"].mean()
 
-    # GDD squared
     row["GDD_Apr_Sep_sq"] = row["GDD_Apr_Sep"] ** 2
 
-    # Vintage outcome
     v = sub[sub["month"] == 1]["vintage"].values
     row["vintage"] = v[0] if len(v) > 0 else np.nan
 
@@ -149,25 +138,9 @@ for y in years:
 
 year_df = pd.DataFrame(rows).dropna().reset_index(drop=True)
 
-with st.expander("Constructed dataset", expanded=False):
-    st.dataframe(year_df, use_container_width=True)
-
 # ----------------------------------
-# Sidebar controls
+# Controls on right panel
 # ----------------------------------
-
-st.sidebar.header("Model Controls")
-
-with st.sidebar.expander("Target", expanded=True):
-    target_mode = st.radio(
-        "Prediction Target",
-        ["Classic only", "Classic + Non Classic"]
-    )
-
-if target_mode == "Classic only":
-    y = (year_df["vintage"] == 1).astype(int)
-else:
-    y = (year_df["vintage"] > 0).astype(int)
 
 predictors = [
     "GDD_Apr_Sep",
@@ -213,24 +186,34 @@ default_selected = [
 if "predictor_selection" not in st.session_state:
     st.session_state["predictor_selection"] = default_selected.copy()
 
-with st.sidebar.expander("Choose predictors", expanded=True):
-    c1, c2 = st.columns(2)
+with right_col:
+    target_mode = st.radio(
+        "Prediction Target",
+        ["Classic only", "Classic + Non Classic"]
+    )
 
-    with c1:
-        if st.button("Select all"):
+    if target_mode == "Classic only":
+        y = (year_df["vintage"] == 1).astype(int)
+    else:
+        y = (year_df["vintage"] > 0).astype(int)
+
+    st.markdown("**Predictors**")
+
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("Select all predictors"):
             st.session_state["predictor_selection"] = predictors.copy()
-
-    with c2:
-        if st.button("Clear all"):
+    with b2:
+        if st.button("Clear predictors"):
             st.session_state["predictor_selection"] = []
 
     selected = st.multiselect(
-        "Select predictors",
+        "Choose predictors",
         options=predictors,
-        key="predictor_selection"
+        key="predictor_selection",
+        label_visibility="collapsed"
     )
 
-with st.sidebar.expander("Prediction settings", expanded=True):
     threshold = st.slider(
         "Vintage prediction threshold",
         min_value=0.0,
@@ -250,7 +233,6 @@ if len(selected) == 0:
 X = year_df[selected].copy()
 X = sm.add_constant(X, has_constant="add")
 
-# Drop any rows with missing data in X or y
 valid_idx = X.notna().all(axis=1) & y.notna()
 X = X.loc[valid_idx].reset_index(drop=True)
 y = y.loc[valid_idx].reset_index(drop=True)
@@ -263,6 +245,17 @@ except Exception as e:
     st.stop()
 
 # ----------------------------------
+# Left panel: data previews
+# ----------------------------------
+
+with left_col:
+    with st.expander("Raw data preview", expanded=False):
+        st.dataframe(df.head(), use_container_width=True)
+
+    with st.expander("Constructed dataset", expanded=False):
+        st.dataframe(year_df, use_container_width=True)
+
+# ----------------------------------
 # Model estimates
 # ----------------------------------
 
@@ -272,13 +265,7 @@ summary_table = pd.DataFrame({
     "coef": model.params,
     "pvalue": model.pvalues,
     "odds_ratio": np.exp(model.params)
-})
-
-summary_table = summary_table.round({
-    "coef": 4,
-    "pvalue": 4,
-    "odds_ratio": 4
-})
+}).round(4)
 
 st.dataframe(summary_table, use_container_width=True)
 
@@ -302,22 +289,15 @@ except Exception:
 
 st.header("Diagnostics")
 
-col1, col2, col3 = st.columns(3)
-col4, col5, col6 = st.columns(3)
+c1, c2, c3 = st.columns(3)
+c4, c5, c6 = st.columns(3)
 
-with col1:
-    st.metric("Accuracy", f"{accuracy:.2f}")
-with col2:
-    st.metric("ROC AUC", f"{auc:.2f}" if pd.notna(auc) else "NA")
-with col3:
-    st.metric("Pseudo R²", f"{model.prsquared:.2f}")
-
-with col4:
-    st.metric("AIC", f"{model.aic:.2f}")
-with col5:
-    st.metric("BIC", f"{model.bic:.2f}")
-with col6:
-    st.metric("Threshold", f"{threshold:.2f}")
+c1.metric("Accuracy", f"{accuracy:.2f}")
+c2.metric("ROC AUC", f"{auc:.2f}" if pd.notna(auc) else "NA")
+c3.metric("Pseudo R²", f"{model.prsquared:.2f}")
+c4.metric("AIC", f"{model.aic:.2f}")
+c5.metric("BIC", f"{model.bic:.2f}")
+c6.metric("Threshold", f"{threshold:.2f}")
 
 # ----------------------------------
 # Plot probabilities over time
@@ -376,13 +356,13 @@ results["actual"] = y.values
 missed_vintages = results[(results["actual"] == 1) & (results["prediction"] == 0)]
 false_vintages = results[(results["actual"] == 0) & (results["prediction"] == 1)]
 
-col_left, col_right = st.columns(2)
+m1, m2 = st.columns(2)
 
-with col_left:
+with m1:
     st.header("Missed vintages")
     st.dataframe(missed_vintages[["year", "prob"]], use_container_width=True)
 
-with col_right:
+with m2:
     st.header("Predicted vintages not declared")
     st.dataframe(false_vintages[["year", "prob"]], use_container_width=True)
 
@@ -421,11 +401,6 @@ st.write(
 # ----------------------------------
 
 means = X.drop(columns="const", errors="ignore").mean()
-
-# ----------------------------------
-# Marginal effect of September rain
-# at Aridity = mean + 1 SD
-# ----------------------------------
 
 rain = means.get("Rain_Sep", year_df_model["Rain_Sep"].mean())
 tempjul = means.get("Temp_Jul", year_df_model["Temp_Jul"].mean())
@@ -475,11 +450,6 @@ ME_rain_1sd = p1 * (1 - p1) * dz_drain_1sd
 st.header("Marginal Effect of September Rain at Aridity = Mean + 1 SD")
 st.write(f"{ME_rain_1sd:.4f}")
 
-# ----------------------------------
-# Marginal effect of September rain
-# at Aridity = mean + 2 SD
-# ----------------------------------
-
 A_2sd = year_df_model["Aridity_Index"].mean() + 2 * year_df_model["Aridity_Index"].std()
 
 dz_drain_2sd = (
@@ -512,7 +482,6 @@ st.write(f"{ME_rain_2sd:.4f}")
 
 def linear_index_derivative(var_name, params, means_dict):
     d = 0.0
-
     d += params.get(var_name, 0.0)
 
     square_map = {
@@ -618,7 +587,6 @@ for var in base_variables_for_me:
     if var in year_df_model.columns:
         dzdx = linear_index_derivative(var, model.params, Xmean_dict)
         me = p_at_mean * (1 - p_at_mean) * dzdx
-
         me_rows.append({
             "variable": var,
             "mean_value": Xmean_dict.get(var, np.nan),
