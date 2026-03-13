@@ -5,28 +5,49 @@ import statsmodels.api as sm
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score, roc_auc_score
 
+# ----------------------------------
+# Page config
+# ----------------------------------
+
+st.set_page_config(
+    page_title="Port Vintage Declaration Prediction",
+    layout="wide"
+)
+
 # Based on insights by viticulturist António Magalhães
 
 st.title("Port Vintage Declaration Prediction")
+
+# ----------------------------------
+# Sidebar: upload and general settings
+# ----------------------------------
 
 st.sidebar.header("Upload Data")
 
 uploaded_file = st.sidebar.file_uploader("Upload Excel File", type=["xlsx"])
 
 if uploaded_file is None:
+    st.info("Please upload an Excel file to begin.")
     st.stop()
 
 df = pd.read_excel(uploaded_file)
 
-st.write("Raw data preview")
-st.dataframe(df.head())
+# ----------------------------------
+# Check required columns
+# ----------------------------------
 
-# Expected columns
 required_cols = ["year", "month", "tmax", "tmin", "rain", "vintage"]
 
 if not all(col in df.columns for col in required_cols):
     st.error("Spreadsheet must contain: year, month, tmax, tmin, rain, vintage")
     st.stop()
+
+# ----------------------------------
+# Raw data preview
+# ----------------------------------
+
+with st.expander("Raw data preview", expanded=False):
+    st.dataframe(df.head(), use_container_width=True)
 
 # ----------------------------------
 # Monthly constructed variables
@@ -41,7 +62,7 @@ df["gdd"] = np.maximum(df["tmean"] - base_temp, 0)
 # Construct annual variables
 # ----------------------------------
 
-years = sorted(df["year"].unique())
+years = sorted(df["year"].dropna().unique())
 rows = []
 
 for y in years:
@@ -50,10 +71,10 @@ for y in years:
 
     row = {}
     row["year"] = y
-  
+
     # Growing degree days
     row["GDD_Apr_Sep"] = sub[sub["month"].between(4, 9)]["gdd"].sum()
-    
+
     row["Rain_Sep"] = sub[sub["month"] == 9]["rain"].sum()
 
     row["Temp_Jul"] = sub[sub["month"] == 7]["tmean"].mean()
@@ -65,6 +86,7 @@ for y in years:
     row["Tmin_August"] = sub[sub["month"] == 8]["tmin"].mean()
     row["Tmin_July_August"] = sub[sub["month"].isin([7, 8])]["tmin"].mean()
 
+    # Rain interactions
     row["TempJul_x_RainSep"] = row["Temp_Jul"] * row["Rain_Sep"]
     row["TempAug_x_RainSep"] = row["Temp_Aug"] * row["Rain_Sep"]
 
@@ -73,15 +95,11 @@ for y in years:
     row["Rain_Sep_Oct"] = sub[sub["month"].isin([9, 10])]["rain"].sum()
 
     # Diurnal temperature range
-    row["DTR_Aug_Sep"] = (
-        sub[sub["month"].isin([8, 9])]["tmax"] -
-        sub[sub["month"].isin([8, 9])]["tmin"]
-    ).mean()
+    aug_sep = sub[sub["month"].isin([8, 9])]
+    july = sub[sub["month"] == 7]
 
-    row["DTR_July"] = (
-        sub[sub["month"] == 7]["tmax"] -
-        sub[sub["month"] == 7]["tmin"]
-    ).mean()
+    row["DTR_Aug_Sep"] = (aug_sep["tmax"] - aug_sep["tmin"]).mean()
+    row["DTR_July"] = (july["tmax"] - july["tmin"]).mean()
 
     row["Temp_Apr_Jun"] = sub[sub["month"].isin([4, 5, 6])]["tmean"].mean()
 
@@ -129,32 +147,27 @@ for y in years:
 
     rows.append(row)
 
-year_df = pd.DataFrame(rows).dropna()
+year_df = pd.DataFrame(rows).dropna().reset_index(drop=True)
 
-st.write("Constructed dataset")
-st.dataframe(year_df)
+with st.expander("Constructed dataset", expanded=False):
+    st.dataframe(year_df, use_container_width=True)
 
 # ----------------------------------
-# Target selection, Classic vintage or Classic + non-Classic Vintage
+# Sidebar controls
 # ----------------------------------
 
-target_mode = st.sidebar.radio(
-    "Prediction Target",
-    ["Classic only", "Classic + Non Classic"]
-)
+st.sidebar.header("Model Controls")
+
+with st.sidebar.expander("Target", expanded=True):
+    target_mode = st.radio(
+        "Prediction Target",
+        ["Classic only", "Classic + Non Classic"]
+    )
 
 if target_mode == "Classic only":
-    # Only classic vintages count as 1
     y = (year_df["vintage"] == 1).astype(int)
 else:
-    # Any positive vintage code counts as 1
     y = (year_df["vintage"] > 0).astype(int)
-
-# ----------------------------------
-# Variable selection
-# ----------------------------------
-
-st.sidebar.header("Choose predictors")
 
 predictors = [
     "GDD_Apr_Sep",
@@ -185,7 +198,7 @@ predictors = [
     "DTR_July"
 ]
 
-default_selected = {
+default_selected = [
     "GDD_Apr_Sep",
     "GDD_Apr_Sep_sq",
     "Rain_Sep",
@@ -195,30 +208,40 @@ default_selected = {
     "Rain_Oct_Feb",
     "Tmax_August",
     "DTR_July"
-}
+]
 
-selected = []
-for p in predictors:
-    if st.sidebar.checkbox(p, value=(p in default_selected)):
-        selected.append(p)
+if "predictor_selection" not in st.session_state:
+    st.session_state["predictor_selection"] = default_selected.copy()
+
+with st.sidebar.expander("Choose predictors", expanded=True):
+    c1, c2 = st.columns(2)
+
+    with c1:
+        if st.button("Select all"):
+            st.session_state["predictor_selection"] = predictors.copy()
+
+    with c2:
+        if st.button("Clear all"):
+            st.session_state["predictor_selection"] = []
+
+    selected = st.multiselect(
+        "Select predictors",
+        options=predictors,
+        key="predictor_selection"
+    )
+
+with st.sidebar.expander("Prediction settings", expanded=True):
+    threshold = st.slider(
+        "Vintage prediction threshold",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.50,
+        step=0.01
+    )
 
 if len(selected) == 0:
-    st.warning("Select at least one variable")
+    st.warning("Select at least one predictor.")
     st.stop()
-
-# ----------------------------------
-# Prediction settings
-# ----------------------------------
-
-st.sidebar.header("Prediction Settings")
-
-threshold = st.sidebar.slider(
-    "Vintage prediction threshold",
-    min_value=0.0,
-    max_value=1.0,
-    value=0.50,
-    step=0.01
-)
 
 # ----------------------------------
 # Build X and run logit
@@ -226,6 +249,12 @@ threshold = st.sidebar.slider(
 
 X = year_df[selected].copy()
 X = sm.add_constant(X, has_constant="add")
+
+# Drop any rows with missing data in X or y
+valid_idx = X.notna().all(axis=1) & y.notna()
+X = X.loc[valid_idx].reset_index(drop=True)
+y = y.loc[valid_idx].reset_index(drop=True)
+year_df_model = year_df.loc[valid_idx].reset_index(drop=True)
 
 try:
     model = sm.Logit(y, X).fit(disp=0)
@@ -245,7 +274,13 @@ summary_table = pd.DataFrame({
     "odds_ratio": np.exp(model.params)
 })
 
-st.dataframe(summary_table)
+summary_table = summary_table.round({
+    "coef": 4,
+    "pvalue": 4,
+    "odds_ratio": 4
+})
+
+st.dataframe(summary_table, use_container_width=True)
 
 # ----------------------------------
 # Predictions
@@ -254,29 +289,35 @@ st.dataframe(summary_table)
 probs = model.predict(X)
 pred = (probs > threshold).astype(int)
 
-# Accuracy = Number of correct predictions/Total number of predictions
 accuracy = accuracy_score(y, pred)
 
-# Receiver Operating Characteristic – Area Under the Curve (more informative than accuracy given that vintages are rare). 0.5 corresponds to random guessing
-# It measures how well model separates vintage years from non-vintage years
 try:
     auc = roc_auc_score(y, probs)
 except Exception:
     auc = np.nan
 
+# ----------------------------------
+# Diagnostics
+# ----------------------------------
+
 st.header("Diagnostics")
 
-st.write("Accuracy:", f"{accuracy:.2f}")
-st.write("ROC AUC:", f"{auc:.2f}")
-st.write("Pseudo R2:", f"{model.prsquared:.2f}")
+col1, col2, col3 = st.columns(3)
+col4, col5, col6 = st.columns(3)
 
-# Akaike information criterion, balances fit and simplicity (lower is better)
-st.write("AIC:", f"{model.aic:.2f}")
+with col1:
+    st.metric("Accuracy", f"{accuracy:.2f}")
+with col2:
+    st.metric("ROC AUC", f"{auc:.2f}" if pd.notna(auc) else "NA")
+with col3:
+    st.metric("Pseudo R²", f"{model.prsquared:.2f}")
 
-# Bayesian information criterion (lower is better), it penalizes model complexity more stringly than AIC  
-st.write("BIC:", f"{model.bic:.2f}")
-
-st.write("Prediction threshold:", f"{threshold:.2f}")
+with col4:
+    st.metric("AIC", f"{model.aic:.2f}")
+with col5:
+    st.metric("BIC", f"{model.bic:.2f}")
+with col6:
+    st.metric("Threshold", f"{threshold:.2f}")
 
 # ----------------------------------
 # Plot probabilities over time
@@ -284,9 +325,9 @@ st.write("Prediction threshold:", f"{threshold:.2f}")
 
 st.header("Predicted probabilities over time")
 
-plot_df = year_df.copy()
-plot_df["prob"] = probs
-plot_df["actual"] = y
+plot_df = year_df_model.copy()
+plot_df["prob"] = probs.values
+plot_df["actual"] = y.values
 
 declared = plot_df[plot_df["actual"] == 1].copy()
 
@@ -327,41 +368,41 @@ st.pyplot(fig)
 # Misclassifications
 # ----------------------------------
 
-results = year_df.copy()
-results["prob"] = probs
-results["prediction"] = pred
-results["actual"] = y
+results = year_df_model.copy()
+results["prob"] = probs.values
+results["prediction"] = pred.values
+results["actual"] = y.values
 
 missed_vintages = results[(results["actual"] == 1) & (results["prediction"] == 0)]
 false_vintages = results[(results["actual"] == 0) & (results["prediction"] == 1)]
 
-st.header("Missed vintages")
-st.dataframe(missed_vintages[["year", "prob"]])
+col_left, col_right = st.columns(2)
 
-st.header("Predicted vintages not declared")
-st.dataframe(false_vintages[["year", "prob"]])
+with col_left:
+    st.header("Missed vintages")
+    st.dataframe(missed_vintages[["year", "prob"]], use_container_width=True)
 
-# Counts
+with col_right:
+    st.header("Predicted vintages not declared")
+    st.dataframe(false_vintages[["year", "prob"]], use_container_width=True)
+
+# ----------------------------------
+# Classification error rates
+# ----------------------------------
+
 num_actual_vintages = (results["actual"] == 1).sum()
 num_actual_nonvintages = (results["actual"] == 0).sum()
 
 num_missed_vintages = len(missed_vintages)
 num_false_vintages = len(false_vintages)
 
-# Fractions
 frac_vintages_misclassified = (
-    num_missed_vintages / num_actual_vintages
-    if num_actual_vintages > 0 else np.nan
+    num_missed_vintages / num_actual_vintages if num_actual_vintages > 0 else np.nan
 )
 
 frac_nonvintages_misclassified = (
-    num_false_vintages / num_actual_nonvintages
-    if num_actual_nonvintages > 0 else np.nan
+    num_false_vintages / num_actual_nonvintages if num_actual_nonvintages > 0 else np.nan
 )
-
-# ----------------------------------
-# Classification error rates
-# ----------------------------------
 
 st.header("Classification error rates")
 
@@ -386,11 +427,11 @@ means = X.drop(columns="const", errors="ignore").mean()
 # at Aridity = mean + 1 SD
 # ----------------------------------
 
-rain = means.get("Rain_Sep", year_df["Rain_Sep"].mean())
-tempjul = means.get("Temp_Jul", year_df["Temp_Jul"].mean())
-tempaug = means.get("Temp_Aug", year_df["Temp_Aug"].mean())
+rain = means.get("Rain_Sep", year_df_model["Rain_Sep"].mean())
+tempjul = means.get("Temp_Jul", year_df_model["Temp_Jul"].mean())
+tempaug = means.get("Temp_Aug", year_df_model["Temp_Aug"].mean())
 
-A_1sd = year_df["Aridity_Index"].mean() + year_df["Aridity_Index"].std()
+A_1sd = year_df_model["Aridity_Index"].mean() + year_df_model["Aridity_Index"].std()
 
 dz_drain_1sd = (
     model.params.get("Rain_Sep", 0.0)
@@ -406,7 +447,7 @@ for col in X.columns:
     if col == "const":
         X1_dict[col] = 1.0
     else:
-        X1_dict[col] = means.get(col, year_df[col].mean() if col in year_df.columns else 0.0)
+        X1_dict[col] = means.get(col, year_df_model[col].mean() if col in year_df_model.columns else 0.0)
 
 if "Rain_Sep" in X1_dict:
     X1_dict["Rain_Sep"] = rain
@@ -439,7 +480,7 @@ st.write(f"{ME_rain_1sd:.4f}")
 # at Aridity = mean + 2 SD
 # ----------------------------------
 
-A_2sd = year_df["Aridity_Index"].mean() + 2 * year_df["Aridity_Index"].std()
+A_2sd = year_df_model["Aridity_Index"].mean() + 2 * year_df_model["Aridity_Index"].std()
 
 dz_drain_2sd = (
     model.params.get("Rain_Sep", 0.0)
@@ -467,8 +508,6 @@ st.write(f"{ME_rain_2sd:.4f}")
 
 # ----------------------------------
 # General marginal effects table
-# evaluated at the mean
-# with interactions and quadratic terms handled properly
 # ----------------------------------
 
 def linear_index_derivative(var_name, params, means_dict):
@@ -576,7 +615,7 @@ base_variables_for_me = [
 
 me_rows = []
 for var in base_variables_for_me:
-    if var in year_df.columns:
+    if var in year_df_model.columns:
         dzdx = linear_index_derivative(var, model.params, Xmean_dict)
         me = p_at_mean * (1 - p_at_mean) * dzdx
 
@@ -593,6 +632,7 @@ if not me_table.empty:
     me_table["mean_value"] = me_table["mean_value"].round(3)
     me_table["dz_dx_at_mean"] = me_table["dz_dx_at_mean"].round(4)
     me_table["marginal_effect_at_mean"] = me_table["marginal_effect_at_mean"].round(4)
+
     me_table = me_table.sort_values(
         "marginal_effect_at_mean",
         key=lambda s: np.abs(s),
