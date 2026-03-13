@@ -23,7 +23,7 @@ st.title("Port Vintage Declaration Prediction")
 # Based on insights by viticulturist António Magalhães
 
 # ----------------------------------
-# Sidebar: upload only
+# Sidebar
 # ----------------------------------
 
 st.sidebar.header("Upload Data")
@@ -31,6 +31,74 @@ uploaded_file = st.sidebar.file_uploader("Upload Excel File", type=["xlsx"])
 
 if uploaded_file is None:
     st.info("Please upload an Excel file to begin.")
+    st.stop()
+
+st.sidebar.header("Model Controls")
+
+base_temp = st.sidebar.slider("GDD Base Temperature", 5, 15, 10)
+
+target_mode = st.sidebar.radio(
+    "Prediction Target",
+    ["Classic only", "Classic + Non Classic"]
+)
+
+predictors = [
+    "GDD_Apr_Sep",
+    "GDD_Apr_Sep_sq",
+    "Rain_Sep",
+    "RainSep_sq",
+    "Temp_Jul",
+    "Temp_Aug",
+    "Temp_Jul_Aug",
+    "Tmin_July",
+    "Tmin_August",
+    "Tmin_July_August",
+    "TempJul_x_RainSep",
+    "TempAug_x_RainSep",
+    "Rain_Apr_May",
+    "Rain_Jun_Aug",
+    "Rain_Sep_Oct",
+    "DTR_Aug_Sep",
+    "Temp_Apr_Jun",
+    "Rain_Oct_Feb",
+    "Aridity_Index",
+    "Aridity_x_RainSep",
+    "Aridity_x_RainSep_sq",
+    "Tmax_June",
+    "Tmax_July",
+    "Tmax_August",
+    "Tmax_June_July",
+    "DTR_July"
+]
+
+default_selected = [
+    "GDD_Apr_Sep",
+    "GDD_Apr_Sep_sq",
+    "Rain_Sep",
+    "Temp_Jul",
+    "Temp_Aug",
+    "Rain_Apr_May",
+    "Rain_Oct_Feb",
+    "Tmax_August",
+    "DTR_July"
+]
+
+selected = st.sidebar.multiselect(
+    "Choose predictors",
+    options=predictors,
+    default=default_selected
+)
+
+threshold = st.sidebar.slider(
+    "Vintage prediction threshold",
+    min_value=0.0,
+    max_value=1.0,
+    value=0.50,
+    step=0.01
+)
+
+if len(selected) == 0:
+    st.warning("Select at least one predictor.")
     st.stop()
 
 # ----------------------------------
@@ -43,17 +111,6 @@ required_cols = ["year", "month", "tmax", "tmin", "rain", "vintage"]
 if not all(col in df.columns for col in required_cols):
     st.error("Spreadsheet must contain: year, month, tmax, tmin, rain, vintage")
     st.stop()
-
-# ----------------------------------
-# Main-page controls layout
-# ----------------------------------
-
-left_col, right_col = st.columns([2.2, 1.2])
-
-with right_col:
-    st.subheader("Model Controls")
-
-    base_temp = st.slider("GDD Base Temperature", 5, 15, 10)
 
 # ----------------------------------
 # Monthly constructed variables
@@ -139,92 +196,27 @@ for y in years:
 year_df = pd.DataFrame(rows).dropna().reset_index(drop=True)
 
 # ----------------------------------
-# Controls on right panel
+# Target variable
 # ----------------------------------
 
-predictors = [
-    "GDD_Apr_Sep",
-    "GDD_Apr_Sep_sq",
-    "Rain_Sep",
-    "RainSep_sq",
-    "Temp_Jul",
-    "Temp_Aug",
-    "Temp_Jul_Aug",
-    "Tmin_July",
-    "Tmin_August",
-    "Tmin_July_August",
-    "TempJul_x_RainSep",
-    "TempAug_x_RainSep",
-    "Rain_Apr_May",
-    "Rain_Jun_Aug",
-    "Rain_Sep_Oct",
-    "DTR_Aug_Sep",
-    "Temp_Apr_Jun",
-    "Rain_Oct_Feb",
-    "Aridity_Index",
-    "Aridity_x_RainSep",
-    "Aridity_x_RainSep_sq",
-    "Tmax_June",
-    "Tmax_July",
-    "Tmax_August",
-    "Tmax_June_July",
-    "DTR_July"
-]
+if target_mode == "Classic only":
+    y = (year_df["vintage"] == 1).astype(int)
+else:
+    y = (year_df["vintage"] > 0).astype(int)
 
-default_selected = [
-    "GDD_Apr_Sep",
-    "GDD_Apr_Sep_sq",
-    "Rain_Sep",
-    "Temp_Jul",
-    "Temp_Aug",
-    "Rain_Apr_May",
-    "Rain_Oct_Feb",
-    "Tmax_August",
-    "DTR_July"
-]
+# ----------------------------------
+# Main page layout
+# ----------------------------------
 
-if "predictor_selection" not in st.session_state:
-    st.session_state["predictor_selection"] = default_selected.copy()
+top_left, top_right = st.columns([1.2, 1.8])
 
-with right_col:
-    target_mode = st.radio(
-        "Prediction Target",
-        ["Classic only", "Classic + Non Classic"]
-    )
+with top_left:
+    with st.expander("Raw data preview", expanded=False):
+        st.dataframe(df.head(), use_container_width=True)
 
-    if target_mode == "Classic only":
-        y = (year_df["vintage"] == 1).astype(int)
-    else:
-        y = (year_df["vintage"] > 0).astype(int)
-
-    st.markdown("**Predictors**")
-
-    b1, b2 = st.columns(2)
-    with b1:
-        if st.button("Select all predictors"):
-            st.session_state["predictor_selection"] = predictors.copy()
-    with b2:
-        if st.button("Clear predictors"):
-            st.session_state["predictor_selection"] = []
-
-    selected = st.multiselect(
-        "Choose predictors",
-        options=predictors,
-        key="predictor_selection",
-        label_visibility="collapsed"
-    )
-
-    threshold = st.slider(
-        "Vintage prediction threshold",
-        min_value=0.0,
-        max_value=1.0,
-        value=0.50,
-        step=0.01
-    )
-
-if len(selected) == 0:
-    st.warning("Select at least one predictor.")
-    st.stop()
+with top_right:
+    with st.expander("Constructed dataset", expanded=False):
+        st.dataframe(year_df, use_container_width=True)
 
 # ----------------------------------
 # Build X and run logit
@@ -243,17 +235,6 @@ try:
 except Exception as e:
     st.error(f"Model could not be estimated: {e}")
     st.stop()
-
-# ----------------------------------
-# Left panel: data previews
-# ----------------------------------
-
-with left_col:
-    with st.expander("Raw data preview", expanded=False):
-        st.dataframe(df.head(), use_container_width=True)
-
-    with st.expander("Constructed dataset", expanded=False):
-        st.dataframe(year_df, use_container_width=True)
 
 # ----------------------------------
 # Model estimates
@@ -312,21 +293,18 @@ plot_df["actual"] = y.values
 declared = plot_df[plot_df["actual"] == 1].copy()
 
 fig, ax = plt.subplots(figsize=(12, 6))
-
 ax.plot(
     plot_df["year"],
     plot_df["prob"],
     linewidth=2.5,
     label="Predicted probability"
 )
-
 ax.axhline(
     threshold,
     linestyle="--",
     linewidth=2,
     label=f"Threshold = {threshold:.2f}"
 )
-
 ax.scatter(
     declared["year"],
     declared["prob"],
@@ -379,7 +357,6 @@ num_false_vintages = len(false_vintages)
 frac_vintages_misclassified = (
     num_missed_vintages / num_actual_vintages if num_actual_vintages > 0 else np.nan
 )
-
 frac_nonvintages_misclassified = (
     num_false_vintages / num_actual_nonvintages if num_actual_nonvintages > 0 else np.nan
 )
@@ -390,7 +367,6 @@ st.write(
     f"Vintages misclassified: {num_missed_vintages} out of {num_actual_vintages} "
     f"({frac_vintages_misclassified:.2f})"
 )
-
 st.write(
     f"Non-vintages misclassified: {num_false_vintages} out of {num_actual_nonvintages} "
     f"({frac_nonvintages_misclassified:.2f})"
