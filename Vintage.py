@@ -5,6 +5,8 @@ import statsmodels.api as sm
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score, roc_auc_score
 
+# Based on insights by viticulturist António Magalhães
+
 st.title("Port Vintage Declaration Prediction")
 
 st.sidebar.header("Upload Data")
@@ -48,8 +50,10 @@ for y in years:
 
     row = {}
     row["year"] = y
-
+  
+    # Growing degree days
     row["GDD_Apr_Sep"] = sub[sub["month"].between(4, 9)]["gdd"].sum()
+    
     row["Rain_Sep"] = sub[sub["month"] == 9]["rain"].sum()
 
     row["Temp_Jul"] = sub[sub["month"] == 7]["tmean"].mean()
@@ -68,6 +72,7 @@ for y in years:
     row["Rain_Jun_Aug"] = sub[sub["month"].isin([6, 7, 8])]["rain"].sum()
     row["Rain_Sep_Oct"] = sub[sub["month"].isin([9, 10])]["rain"].sum()
 
+    # Diurnal temperature range
     row["DTR_Aug_Sep"] = (
         sub[sub["month"].isin([8, 9])]["tmax"] -
         sub[sub["month"].isin([8, 9])]["tmin"]
@@ -130,7 +135,7 @@ st.write("Constructed dataset")
 st.dataframe(year_df)
 
 # ----------------------------------
-# Target selection
+# Target selection, Classic vintage or Classic + non-Classic Vintage
 # ----------------------------------
 
 target_mode = st.sidebar.radio(
@@ -249,19 +254,28 @@ st.dataframe(summary_table)
 probs = model.predict(X)
 pred = (probs > threshold).astype(int)
 
+# Accuracy = Number of correct predictions/Total number of predictions
 accuracy = accuracy_score(y, pred)
 
+# Receiver Operating Characteristic – Area Under the Curve (more informative than accuracy given that vintages are rare). 0.5 corresponds to random guessing
+# It measures how well model separates vintage years from non-vintage years
 try:
     auc = roc_auc_score(y, probs)
 except Exception:
     auc = np.nan
 
 st.header("Diagnostics")
-st.write("Accuracy:", accuracy)
-st.write("ROC AUC:", auc)
-st.write("Pseudo R2:", model.prsquared)
-st.write("AIC:", model.aic)
-st.write("BIC:", model.bic)
+
+st.write("Accuracy:", f"{accuracy:.2f}")
+st.write("ROC AUC:", f"{auc:.2f}")
+st.write("Pseudo R2:", f"{model.prsquared:.2f}")
+
+# Akaike information criterion, balances fit and simplicity (lower is better)
+st.write("AIC:", f"{model.aic:.2f}")
+
+# Bayesian information criterion (lower is better), it penalizes model complexity more stringly than AIC  
+st.write("BIC:", f"{model.bic:.2f}")
+
 st.write("Prediction threshold:", f"{threshold:.2f}")
 
 # ----------------------------------
