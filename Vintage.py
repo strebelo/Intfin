@@ -188,7 +188,7 @@ predictors = [
     "Tmax_July",
     "Tmax_August",
     "Tmax_June_July",
-    "DTR_July,"
+    "DTR_July",
     "Stress_Index",
     "Stress_x_RainSep",
 ]
