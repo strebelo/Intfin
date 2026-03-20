@@ -70,6 +70,12 @@ for y in years:
     row["Rain_Jun_Aug"] = sub[sub["month"].isin([6, 7, 8])]["rain"].sum()
     row["Rain_Sep_Oct"] = sub[sub["month"].isin([9, 10])]["rain"].sum()
 
+    # Stress index: heat relative to water during ripening
+    if row["Rain_Jun_Aug"] > 0:
+        row["Stress_Index"] = row["GDD_Apr_Sep"] / row["Rain_Jun_Aug"]
+    else:
+        row["Stress_Index"] = np.nan
+
     row["DTR_Aug_Sep"] = (
         sub[sub["month"].isin([8, 9])]["tmax"] -
         sub[sub["month"].isin([8, 9])]["tmin"]
@@ -106,6 +112,9 @@ for y in years:
 
     # September rain squared
     row["RainSep_sq"] = row["Rain_Sep"] ** 2
+
+    # September rain squared
+    row["Stress_x_RainSep"] = row["Stress_Index"] * row["Rain_Sep"]
 
     # Aridity interactions
     row["Aridity_x_RainSep"] = row["Aridity_Index"] * row["Rain_Sep"]
@@ -180,6 +189,8 @@ predictors = [
     "Tmax_August",
     "Tmax_June_July",
     "DTR_July"
+    "Stress_Index",
+    "Stress_x_RainSep",
 ]
 
 default_selected = {
