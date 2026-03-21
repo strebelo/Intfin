@@ -62,6 +62,7 @@ for y in years:
     row["Tmin_July"] = sub[sub["month"] == 7]["tmin"].mean()
     row["Tmin_August"] = sub[sub["month"] == 8]["tmin"].mean()
     row["Tmin_July_August"] = sub[sub["month"].isin([7, 8])]["tmin"].mean()
+    row["Tmin_September"] = sub[sub["month"] == 9]["tmin"].mean()
 
     row["TempJul_x_RainSep"] = row["Temp_Jul"] * row["Rain_Sep"]
     row["TempAug_x_RainSep"] = row["Temp_Aug"] * row["Rain_Sep"]
@@ -103,6 +104,11 @@ for y in years:
     rain_oct_dec = prev[prev["month"].isin([10, 11, 12])]["rain"].sum()
     rain_jan_aug = sub[sub["month"].isin([1, 2, 3, 4, 5, 6, 7, 8])]["rain"].sum()
     rain_oct_aug = rain_oct_dec + rain_jan_aug
+
+    # Huglin index: (1.02/2) * sum_{Apr-Sep}[(Tavg - 10) + (Tmax - 10)]
+    huglin_sub = sub[sub["month"].between(4, 9)].copy()
+    row["Huglin_Index"] = (1.02 / 2) * (
+        (huglin_sub["tmean"] - 10) + (huglin_sub["tmax"] - 10)).sum()
 
     # Aridity index
     if rain_oct_aug > 0:
@@ -191,6 +197,8 @@ predictors = [
     "DTR_July",
     "Stress_Index",
     "Stress_x_RainSep",
+    "Tmin_September",
+    "Huglin_Index",
 ]
 
 default_selected = {
