@@ -11,31 +11,6 @@ import streamlit as st
 st.set_page_config(page_title="Price Plan Detector", layout="wide")
 
 
-# ------------------------------------------------------------
-# Model intuition
-# ------------------------------------------------------------
-# The user supplies an initial plan: regular price R0, sale price S0,
-# and probabilities of observing regular / sale / other.
-#
-# The program then searches over a set of candidate plans extracted from
-# the data and estimates the most likely sequence of plans with a simple,
-# transparent HMM-style filter/smoother:
-#
-# - latent state k = price plan (R_k, S_k)
-# - observed price at time t is generated from:
-#       regular with prob p_reg
-#       sale    with prob p_sale
-#       other   with prob p_other
-# - plans are persistent: high probability of staying in the same plan
-#
-# This is not yet a full hidden semi-Markov model, but it is streamlit-
-# friendly, easy to initialize, and already handles rare "other" prices.
-#
-# I structured the code so you can later replace the transition matrix or
-# the Viterbi routine with a true HSMM if you want explicit durations.
-# ------------------------------------------------------------
-
-
 @dataclass
 class Plan:
     regular: float
@@ -45,9 +20,6 @@ class Plan:
         return f"R={self.regular:g}, S={self.sale:g}"
 
 
-# ------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------
 def normalize_probs(p_reg: float, p_sale: float, p_other: float) -> Tuple[float, float, float]:
     total = p_reg + p_sale + p_other
     if total <= 0:
@@ -57,8 +29,7 @@ def normalize_probs(p_reg: float, p_sale: float, p_other: float) -> Tuple[float,
 
 @st.cache_data(show_spinner=False)
 def load_csv(uploaded_file) -> pd.DataFrame:
-    df = pd.read_csv(uploaded_file)
-    return df
+    return pd.read_csv(uploaded_file)
 
 
 def validate_input_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -86,19 +57,15 @@ def build_candidate_plans(
 ) -> List[Plan]:
     unique_prices = sorted(pd.Series(prices).dropna().unique())
 
-    # Include the user-supplied initial plan no matter what.
     plans = {(float(initial_regular), float(initial_sale))}
 
-    # Candidate prices are the most common observed prices.
     counts = pd.Series(prices).value_counts()
     common_prices = list(counts.index[: min(len(counts), 8)])
 
-    # Add all pairs with regular > sale among common prices.
     for r, s in itertools.permutations(common_prices, 2):
         if r > s:
             plans.add((float(r), float(s)))
 
-    # Fallback: if data are very sparse, use all unique prices.
     if len(plans) < 2:
         for r, s in itertools.permutations(unique_prices, 2):
             if r > s:
@@ -106,13 +73,11 @@ def build_candidate_plans(
 
     plan_objs = [Plan(r, s) for r, s in sorted(plans, key=lambda x: (x[0], x[1]))]
 
-    # Keep the initial plan plus the most plausible others.
     def score(plan: Plan) -> float:
         return float(((prices == plan.regular) | (prices == plan.sale)).sum())
 
     plan_objs = sorted(plan_objs, key=score, reverse=True)
 
-    # Force initial plan to be included and first.
     initial = Plan(float(initial_regular), float(initial_sale))
     dedup: Dict[Tuple[float, float], Plan] = {(initial.regular, initial.sale): initial}
     for p in plan_objs:
@@ -134,10 +99,6 @@ def emission_prob(
     p_other: float,
     other_support: int,
 ) -> float:
-    # Discrete emission:
-    # - exact regular price gets p_reg
-    # - exact sale price gets p_sale
-    # - any other price shares p_other evenly across remaining support
     if observed_price == plan.regular:
         return p_reg
     if observed_price == plan.sale:
@@ -177,16 +138,33 @@ def viterbi_decode(
     trans = build_transition_matrix(k, stay_prob)
     log_trans = np.log(np.clip(trans, 1e-14, None))
 
+    # Constraint:
+    # At time t, the regular price cannot exceed the highest observed price up to t.
+    running_max_price = np.maximum.accumulate(prices)
+
     init_probs = np.full(k, 1e-8)
     init_probs[init_state_index] = 1.0
     init_probs = init_probs / init_probs.sum()
     log_init = np.log(np.clip(init_probs, 1e-14, None))
 
-    log_emit = np.zeros((n, k))
+    log_emit = np.full((n, k), -np.inf)
     for t in range(n):
         for j, plan in enumerate(plans):
+            if plan.regular > running_max_price[t]:
+                continue
             prob = emission_prob(prices[t], plan, p_reg, p_sale, p_other, other_support)
             log_emit[t, j] = np.log(max(prob, 1e-14))
+
+    admissible_t0 = np.isfinite(log_emit[0])
+    if not admissible_t0.any():
+        raise ValueError(
+            "No admissible price plan at time 0. Check the initial plan or candidate plans."
+        )
+
+    if not admissible_t0[init_state_index]:
+        init_probs = admissible_t0.astype(float)
+        init_probs = init_probs / init_probs.sum()
+        log_init = np.log(np.clip(init_probs, 1e-14, None))
 
     dp = np.full((n, k), -np.inf)
     ptr = np.zeros((n, k), dtype=int)
@@ -195,9 +173,17 @@ def viterbi_decode(
 
     for t in range(1, n):
         for j in range(k):
+            if not np.isfinite(log_emit[t, j]):
+                continue
             candidates = dp[t - 1] + log_trans[:, j]
             ptr[t, j] = int(np.argmax(candidates))
             dp[t, j] = candidates[ptr[t, j]] + log_emit[t, j]
+
+    if not np.isfinite(dp[-1]).any():
+        raise ValueError(
+            "No feasible path satisfies the regular-price constraint. "
+            "Try increasing the number of candidate plans or changing the initialization."
+        )
 
     states = np.zeros(n, dtype=int)
     states[-1] = int(np.argmax(dp[-1]))
@@ -275,9 +261,18 @@ def spells_table(results: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-# ------------------------------------------------------------
-# Streamlit UI
-# ------------------------------------------------------------
+def default_example() -> pd.DataFrame:
+    data = {
+        "time": list(range(1, 53)),
+        "price": [
+            10, 10, 5, 5, 10, 7, 10, 5, 10, 11, 6, 6, 6, 11, 7, 6, 6, 11,
+            10, 5, 5, 7, 5, 10, 12, 12, 12, 12, 6, 6, 12, 6, 7, 8, 6, 12,
+            12, 6, 12, 6, 12, 6, 12, 12, 7, 13, 12, 12, 12, 6, 6, 6,
+        ],
+    }
+    return pd.DataFrame(data)
+
+
 st.title("Price plan detector")
 st.write(
     "Upload a CSV with columns **time** and **price**, provide an initial price plan, "
@@ -304,21 +299,6 @@ with st.sidebar:
     run_button = st.button("Detect price plan", type="primary")
 
 
-# ------------------------------------------------------------
-# Default example if no file is uploaded
-# ------------------------------------------------------------
-def default_example() -> pd.DataFrame:
-    data = {
-        "time": list(range(1, 53)),
-        "price": [
-            10, 10, 5, 5, 10, 7, 10, 5, 10, 11, 6, 6, 6, 11, 7, 6, 6, 11,
-            10, 5, 5, 7, 5, 10, 12, 12, 12, 12, 6, 6, 12, 6, 7, 8, 6, 12,
-            12, 6, 12, 6, 12, 6, 12, 12, 7, 13, 12, 12, 12, 6, 6, 6,
-        ],
-    }
-    return pd.DataFrame(data)
-
-
 try:
     if uploaded_file is not None:
         df_raw = load_csv(uploaded_file)
@@ -339,6 +319,7 @@ try:
 
         prices = df["price"].to_numpy(dtype=float)
         plans = build_candidate_plans(prices, initial_regular, initial_sale, max_plans)
+
         states, _ = viterbi_decode(
             prices=prices,
             plans=plans,
@@ -348,6 +329,7 @@ try:
             stay_prob=stay_prob,
             init_state_index=0,
         )
+
         results = summarize_results(df, states, plans)
         spell_df = spells_table(results)
 
@@ -390,11 +372,12 @@ try:
                 - Each hidden state is a candidate price plan with a regular price and a sale price.
                 - The app favors staying in the current plan unless the data provide enough evidence to switch.
                 - A price that matches neither the regular nor the sale price is labeled **other**.
+                - At time `t`, the detected regular price cannot exceed the highest observed price up to time `t`.
 
                 **Current limitation**
 
                 This version uses an HMM-style persistence rule rather than a full hidden semi-Markov duration model.
-                That keeps it fast and easy to tune in Streamlit. A natural next step would be to add explicit duration distributions.
+                That keeps it fast and easy to tune in Streamlit.
                 """
             )
 
