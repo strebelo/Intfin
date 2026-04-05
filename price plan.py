@@ -49,6 +49,37 @@ def validate_input_df(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def infer_initial_plan_from_series(prices: np.ndarray) -> Tuple[float, float]:
+    """
+    Rule:
+    - Let p0 = first observed price.
+    - Find the first later price p1 that differs from p0.
+    - If p1 < p0: initial regular = p0, initial sale = p1.
+    - If p1 > p0: initial regular = p1, initial sale = p0.
+
+    If no different price is ever observed, set both equal to the first price.
+    The caller can decide how to handle that edge case.
+    """
+    if len(prices) == 0:
+        raise ValueError("Price series is empty.")
+
+    first_price = float(prices[0])
+
+    next_different = None
+    for p in prices[1:]:
+        if float(p) != first_price:
+            next_different = float(p)
+            break
+
+    if next_different is None:
+        return first_price, first_price
+
+    if next_different < first_price:
+        return first_price, next_different
+    else:
+        return next_different, first_price
+
+
 def build_candidate_plans(
     prices: np.ndarray,
     initial_regular: float,
@@ -275,17 +306,23 @@ def default_example() -> pd.DataFrame:
 
 st.title("Price plan detector")
 st.write(
-    "Upload a CSV with columns **time** and **price**, provide an initial price plan, "
-    "and the app will infer the most likely sequence of regular/sale plans."
+    "Upload a CSV with columns **time** and **price**, and the app will infer the "
+    "initial plan from the first two distinct prices unless you override it manually."
 )
 
 with st.sidebar:
     st.header("Inputs")
     uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
-    st.subheader("Initial plan")
-    initial_regular = st.number_input("Initial regular price", value=10.0, step=1.0)
-    initial_sale = st.number_input("Initial sale price", value=5.0, step=1.0)
+    st.subheader("Initial plan rule")
+    auto_infer_initial_plan = st.checkbox(
+        "Infer initial plan from first two distinct prices",
+        value=True,
+    )
+
+    st.subheader("Manual initial plan (used only if box above is unchecked)")
+    manual_initial_regular = st.number_input("Manual initial regular price", value=10.0, step=1.0)
+    manual_initial_sale = st.number_input("Manual initial sale price", value=5.0, step=1.0)
 
     st.subheader("Emission probabilities")
     p_reg = st.number_input("P(regular)", min_value=0.0, value=0.45, step=0.05)
@@ -310,14 +347,35 @@ try:
     st.subheader("Input data")
     st.dataframe(df, use_container_width=True)
 
+    prices = df["price"].to_numpy(dtype=float)
+
+    if auto_infer_initial_plan:
+        initial_regular, initial_sale = infer_initial_plan_from_series(prices)
+    else:
+        initial_regular, initial_sale = float(manual_initial_regular), float(manual_initial_sale)
+
+    st.subheader("Initial plan used")
+    init_df = pd.DataFrame(
+        {
+            "initial_regular": [initial_regular],
+            "initial_sale": [initial_sale],
+        }
+    )
+    st.dataframe(init_df, use_container_width=True)
+
     if run_button or uploaded_file is None:
         p_reg_n, p_sale_n, p_other_n = normalize_probs(p_reg, p_sale, p_other)
 
-        if initial_regular <= initial_sale:
-            st.error("The initial regular price must be strictly greater than the sale price.")
+        if initial_regular < initial_sale:
+            st.error("The initial regular price must be at least as large as the sale price.")
             st.stop()
 
-        prices = df["price"].to_numpy(dtype=float)
+        if initial_regular == initial_sale:
+            st.warning(
+                "The first two distinct prices were not found, so the inferred initial regular and sale prices are equal. "
+                "The model can still run, but the initialization is not very informative."
+            )
+
         plans = build_candidate_plans(prices, initial_regular, initial_sale, max_plans)
 
         states, _ = viterbi_decode(
@@ -367,6 +425,13 @@ try:
         with st.expander("Notes"):
             st.markdown(
                 """
+                **How initial inference works**
+
+                - Take the first observed price.
+                - Look for the next price that is different.
+                - If the next different price is lower, the first price is treated as the initial regular price.
+                - If the next different price is higher, the first price is treated as the initial sale price.
+
                 **How the app works**
 
                 - Each hidden state is a candidate price plan with a regular price and a sale price.
