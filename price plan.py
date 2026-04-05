@@ -33,18 +33,22 @@ def load_csv(uploaded_file) -> pd.DataFrame:
 
 
 def validate_input_df(df: pd.DataFrame) -> pd.DataFrame:
-    cols = {c.lower(): c for c in df.columns}
-    if "time" not in cols or "price" not in cols:
-        raise ValueError("The data must contain columns named 'time' and 'price'.")
+    # Clean column names: lowercase + strip spaces
+    df.columns = [c.strip().lower() for c in df.columns]
 
-    out = df[[cols["time"], cols["price"]]].copy()
-    out.columns = ["time", "price"]
+    if "time" not in df.columns or "price" not in df.columns:
+        raise ValueError(
+            f"Columns found: {list(df.columns)}. "
+            "You need columns named 'time' and 'price'."
+        )
+
+    out = df[["time", "price"]].copy()
     out = out.sort_values("time").reset_index(drop=True)
 
     if out["time"].duplicated().any():
         raise ValueError("The 'time' column must not contain duplicates.")
     if out[["time", "price"]].isna().any().any():
-        raise ValueError("The columns 'time' and 'price' must not contain missing values.")
+        raise ValueError("The columns must not contain missing values.")
 
     return out
 
