@@ -44,7 +44,7 @@ def build_valuation_path(base_vals: np.ndarray, shock_pcts: np.ndarray, cumulati
     return V
 
 
-def solve_market_period(vals_t: np.ndarray, equity_t: np.ndarray, H_supply: float, kappa_t: float):
+def solve_market_period(vals_t: np.ndarray, equity_t: np.ndarray, : float, kappa_t: float):
     """
     Solve one period of the housing market.
 
@@ -68,7 +68,7 @@ def solve_market_period(vals_t: np.ndarray, equity_t: np.ndarray, H_supply: floa
 
     # If nobody has equity, no one can buy
     total_equity = equity_t.sum()
-    if total_equity <= 0 or H_supply <= 0:
+    if total_equity <= 0 or  <= 0:
         return 0.0, h, d, None
 
     # Candidate logic:
@@ -86,7 +86,7 @@ def solve_market_period(vals_t: np.ndarray, equity_t: np.ndarray, H_supply: floa
         # Need:
         #   demand from higher-valuation households <= supply
         #   supply <= demand including household m
-        if full_demand_before_m <= H_supply + 1e-12 and full_demand_up_to_m >= H_supply - 1e-12:
+        if full_demand_before_m <=  + 1e-12 and full_demand_up_to_m >=  - 1e-12:
             price = P_candidate
 
             # Higher-valuation households buy as much as they can
@@ -94,7 +94,7 @@ def solve_market_period(vals_t: np.ndarray, equity_t: np.ndarray, H_supply: floa
                 h[:m] = kappa_t * equity_t[:m] / price
 
             # Marginal household buys the residual
-            residual = H_supply - h[:m].sum()
+            residual =  - h[:m].sum()
             h[m] = max(0.0, residual)
 
             # Debt for buyers with positive holdings
@@ -106,7 +106,7 @@ def solve_market_period(vals_t: np.ndarray, equity_t: np.ndarray, H_supply: floa
     # If no marginal household price among the valuation grid works,
     # all households are active and the price must satisfy:
     #   sum_i kappa_t * E_i / P = H
-    price = kappa_t * total_equity / H_supply if H_supply > 0 else 0.0
+    price = kappa_t * total_equity /  if  > 0 else 0.0
 
     if price > 0:
         h = kappa_t * equity_t / price
@@ -240,7 +240,7 @@ with st.sidebar:
     st.header("Global Parameters")
 
     n = st.number_input("Number of households (n)", min_value=2, max_value=500, value=10, step=1)
-    H_supply = st.number_input("Number of houses (H)", min_value=1.0, max_value=float(n - 1), value=5.0, step=1.0)
+    H_supply = st.number_input("Number of houses (H)", min_value=1.0, value=5.0, step=1.0)
     T = st.number_input("Number of periods (T)", min_value=1, max_value=50, value=6, step=1)
 
     st.markdown("---")
