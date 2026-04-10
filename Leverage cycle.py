@@ -240,7 +240,7 @@ with st.sidebar:
     st.header("Global Parameters")
 
     n = st.number_input("Number of households (n)", min_value=2, max_value=500, value=10, step=1)
-    H_supply = st.number_input("Number of houses (H)", min_value=1.0, value=5.0, step=1.0)
+    H_supply = st.number_input("Number of houses (H)", min_value=1.0, value=5.0)
     T = st.number_input("Number of periods (T)", min_value=1, max_value=50, value=6, step=1)
 
     st.markdown("---")
