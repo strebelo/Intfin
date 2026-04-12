@@ -26,34 +26,81 @@ T = st.sidebar.number_input("Number of periods (T)", min_value=5, max_value=100,
 k = st.sidebar.number_input("Production lag k", min_value=1, max_value=10, value=3, step=1)
 R = st.sidebar.number_input("Interest rate R", min_value=0.0, max_value=1.0, value=0.0, step=0.01, format="%.2f")
 
-initial_investment = st.sidebar.number_input("Initial investment for pre-sample periods", min_value=0.0, value=100.0, step=10.0)
-initial_debt = st.sidebar.number_input("Initial debt D_1", min_value=0.0, value=0.0, step=10.0)
+initial_investment = st.sidebar.number_input(
+    "Initial investment for pre-sample periods",
+    min_value=0.0,
+    value=100.0,
+    step=10.0
+)
 
-demand_before = st.sidebar.number_input("Demand shifter before shock", min_value=1.0, value=100.0, step=1.0)
-demand_after = st.sidebar.number_input("Demand shifter after shock", min_value=1.0, value=110.0, step=1.0)
-credit_share = st.sidebar.number_input("Credit line share of revenue", min_value=0.0, max_value=2.0, value=0.5, step=0.05)
+initial_debt = st.sidebar.number_input(
+    "Initial debt D_1",
+    min_value=0.0,
+    value=0.0,
+    step=10.0
+)
 
+demand_before = st.sidebar.number_input(
+    "Demand shifter before shock",
+    min_value=1.0,
+    value=100.0,
+    step=1.0
+)
+
+demand_after = st.sidebar.number_input(
+    "Demand shifter after shock",
+    min_value=1.0,
+    value=110.0,
+    step=1.0
+)
+
+credit_share = st.sidebar.number_input(
+    "Credit line share of revenue",
+    min_value=0.0,
+    max_value=2.0,
+    value=0.5,
+    step=0.05
+)
+
+# ============================================================
+# Investment planning interface: blocks of k investments
+# ============================================================
 st.sidebar.markdown("---")
-st.sidebar.subheader("User-chosen investment path")
+st.sidebar.subheader("Investment plan in blocks of k periods")
 
-default_I = 100.0
+num_blocks = int(np.ceil(T / k))
+
+st.sidebar.markdown(
+    f"You have **T = {T}** periods and **k = {k}**, so the app uses **{num_blocks} block(s)** of size **k**."
+)
+
 user_investments = []
 
-for t in range(1, T + 1):
-    val = st.sidebar.number_input(
-        f"I_{t}",
-        min_value=0.0,
-        value=default_I,
-        step=10.0,
-        key=f"I_{t}"
+for b in range(num_blocks):
+    start_period = b * k + 1
+    end_period = min((b + 1) * k, T)
+
+    st.sidebar.markdown(f"### Block {b+1}: periods {start_period} to {end_period}")
+
+    n_rows = end_period - start_period + 1
+
+    block_df = pd.DataFrame({
+        "Period": list(range(start_period, end_period + 1)),
+        "Investment": [100.0] * n_rows
+    })
+
+    edited_block = st.sidebar.data_editor(
+        block_df,
+        num_rows="fixed",
+        hide_index=True,
+        key=f"investment_block_{b+1}"
     )
-    user_investments.append(val)
+
+    user_investments.extend(edited_block["Investment"].tolist())
 
 # ============================================================
 # Simulation
 # ============================================================
-
-# History of investments: periods 1-k, ..., 0 are preset at initial_investment
 investment_history = [initial_investment] * k
 
 rows = []
@@ -61,7 +108,7 @@ D_t = initial_debt
 
 for t in range(1, T + 1):
     # Output comes from investment k periods ago
-    Y_t = investment_history[t - 1]  # because history starts with k presample values
+    Y_t = investment_history[t - 1]
 
     # Demand shift occurs permanently in period k+1
     A_t = demand_before if t <= k else demand_after
@@ -78,7 +125,7 @@ for t in range(1, T + 1):
     # User desired investment
     desired_I_t = user_investments[t - 1]
 
-    # Enforce borrowing constraint:
+    # Borrowing constraint:
     # D_{t+1} = D_t(1+R) + I_t - revenue_t <= credit_line_t
     # => I_t <= credit_line_t - D_t(1+R) + revenue_t
     max_feasible_I_t = max(0.0, credit_line_t - D_t * (1 + R) + revenue_t)
@@ -88,7 +135,6 @@ for t in range(1, T + 1):
     cash_flow_t = revenue_t - actual_I_t
     D_next = D_t * (1 + R) + actual_I_t - revenue_t
 
-    # Numerical cleanup
     D_next = max(0.0, D_next)
 
     constrained = actual_I_t < desired_I_t - 1e-10
@@ -109,10 +155,7 @@ for t in range(1, T + 1):
         "Constraint_Binds": constrained
     })
 
-    # Append actual investment to history so it becomes output k periods later
     investment_history.append(actual_I_t)
-
-    # Update debt
     D_t = D_next
 
 df = pd.DataFrame(rows)
@@ -142,14 +185,14 @@ st.latex(r"D_{t+1} = D_t(1+R) + I_t - P_tY_t")
 st.latex(r"D_{t+1} \le \text{CreditLine}_t")
 
 st.markdown(
-    """
-Here the app uses the economically natural debt equation:
+    r"""
+Here the app uses
 
 \[
 D_{t+1} = D_t(1+R) + I_t - P_tY_t
 \]
 
-so debt rises when investment exceeds revenue, and falls when revenue exceeds investment.
+so debt rises when investment exceeds revenue and falls when revenue exceeds investment.
 """
 )
 
