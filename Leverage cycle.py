@@ -3,8 +3,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
 
-st.set_page_config(page_title="Leverage Cycle Housing Simulator - Fixed Point Timing", layout="wide")
-
+st.set_page_config(
+    page_title="Leverage Cycle Housing Simulator - Predetermined Equity Timing",
+    layout="wide"
+)
 
 # ============================================================
 # Helpers
@@ -33,32 +35,27 @@ def apply_valuation_shock(
     return base_vals * (1.0 + shock)
 
 
-def compute_equity_at_candidate_price(
+def compute_beginning_equity_predetermined(
     period_number: int,
-    candidate_price: float,
+    last_price: float,
     liquid_wealth_prev: np.ndarray,
     housing_prev: np.ndarray,
     debt_prev: np.ndarray,
     interest_rate_t: float
 ):
     """
-    Earlier timing with fixed point:
+    Predetermined-equity timing:
 
-    At the beginning of period t, households liquidate old housing at the
-    CURRENT candidate price P_t, repay debt, and then use the resulting equity
-    to buy again.
+    At the beginning of period t, households liquidate old housing at last period's price P_{t-1},
+    repay debt, and then carry that equity into the current housing market.
 
     For period 1:
-        equity before purchase = initial liquid wealth
+        beginning equity = initial liquid wealth
 
     For period t >= 2:
-        Previous owners:
-            equity_i(P) = P * h_{t-1,i} - (1+r_t) d_{t-1,i}
+        raw_equity_i = liquid_wealth_prev_i + last_price * housing_prev_i - (1+r_t) * debt_prev_i
 
-        Previous non-owners:
-            equity_i(P) = liquid_wealth_prev_i - (1+r_t) d_{t-1,i}
-
-    Negative equity is clipped to zero and the shortfall becomes residual debt.
+    Negative equity is clipped to zero, and the shortfall becomes residual debt.
     """
     n = len(liquid_wealth_prev)
 
@@ -67,23 +64,15 @@ def compute_equity_at_candidate_price(
         residual_debt = np.zeros(n)
         return equity, residual_debt
 
-    raw_equity = liquid_wealth_prev.copy()
-
-    owners_prev = housing_prev > 1e-12
-    nonowners_prev = ~owners_prev
-
-    raw_equity[owners_prev] = (
-        candidate_price * housing_prev[owners_prev]
-        - (1.0 + interest_rate_t) * debt_prev[owners_prev]
-    )
-
-    raw_equity[nonowners_prev] = (
-        liquid_wealth_prev[nonowners_prev]
-        - (1.0 + interest_rate_t) * debt_prev[nonowners_prev]
+    raw_equity = (
+        liquid_wealth_prev
+        + last_price * housing_prev
+        - (1.0 + interest_rate_t) * debt_prev
     )
 
     equity = np.maximum(raw_equity, 0.0)
     residual_debt = np.maximum(-raw_equity, 0.0)
+
     return equity, residual_debt
 
 
@@ -96,7 +85,7 @@ def allocate_given_price(
     kappa_t: float
 ):
     """
-    For a given price and equity vector, compute desired demand and actual allocation.
+    For a given price and predetermined equity vector, compute desired demand and actual allocation.
 
     Demand rule:
         if V_i > P, desired h_i = kappa * E_i / P
@@ -110,7 +99,7 @@ def allocate_given_price(
     Debt is based on ACTUAL purchases:
         D_i = P * h_i - E_i
     for buyers.
-    Non-buyers keep residual debt from insolvency if any.
+    Non-buyers keep residual debt from pre-existing insolvency if any.
     """
     n = len(vals_t)
     h_desired = np.zeros(n)
@@ -150,90 +139,50 @@ def allocate_given_price(
     return h_desired, h_actual, debt_end, total_desired, marginal_idx
 
 
-def solve_market_period_fixed_point(
+def solve_market_period_predetermined_equity(
     period_number: int,
     vals_t: np.ndarray,
-    liquid_wealth_prev: np.ndarray,
-    housing_prev: np.ndarray,
-    debt_prev: np.ndarray,
+    equity_t: np.ndarray,
+    residual_debt: np.ndarray,
     H_supply: float,
     kappa_t: float,
-    interest_rate_t: float,
-    price_grid_size: int = 500
+    price_grid_size: int = 1000
 ):
     """
-    Solve current period with fixed-point timing:
+    Solve the current market with predetermined equity.
 
-    Equity before purchase depends on current price,
-    and demand depends on that equity.
+    Because equity_t is fixed before current price is solved, there is no fixed point.
+    We search over candidate prices and choose the one whose desired demand is closest to H_supply.
 
-    We search over candidate prices and select the one that makes
-    total desired demand closest to H_supply.
-
-    To help the solver, candidate prices include:
-    - a dense numerical grid
-    - all valuation points
-    - previous owners' breakpoints implied by debt/housing ratios, when meaningful
+    Tie-breaker:
+    - among equally good prices, choose the HIGHER price
     """
     n = len(vals_t)
 
     if H_supply <= 0:
-        return 0.0, np.zeros(n), np.zeros(n), np.zeros(n), None, "invalid_supply"
+        return 0.0, np.zeros(n), residual_debt.copy(), None, "invalid_supply", 0.0
 
     if kappa_t <= 0:
-        equity0, residual0 = compute_equity_at_candidate_price(
-            period_number=period_number,
-            candidate_price=max(vals_t[-1], 1e-8),
-            liquid_wealth_prev=liquid_wealth_prev,
-            housing_prev=housing_prev,
-            debt_prev=debt_prev,
-            interest_rate_t=interest_rate_t
-        )
-        return 0.0, np.zeros(n), residual0, equity0, None, "no_buyers"
+        return 0.0, np.zeros(n), residual_debt.copy(), None, "no_buyers", 0.0
 
-    # Price bounds
-    p_min = max(1e-8, 0.05 * vals_t[-1])
-    p_max = max(vals_t[0] * 1.75, p_min + 1.0)
-
-    dense_grid = np.linspace(p_min, p_max, price_grid_size)
-
-    # Useful breakpoints where some owner's equity crosses zero:
-    owner_breakpoints = []
-    owners_prev = housing_prev > 1e-12
-    if period_number >= 2:
-        for i in np.where(owners_prev)[0]:
-            if housing_prev[i] > 1e-12:
-                bp = ((1.0 + interest_rate_t) * debt_prev[i]) / housing_prev[i]
-                if np.isfinite(bp) and bp > 0:
-                    owner_breakpoints.append(bp)
+    p_min = max(1e-8, 0.02 * vals_t[-1])
+    p_max = max(vals_t[0] * 1.5, p_min + 1.0)
 
     candidate_prices = np.unique(
         np.concatenate([
-            dense_grid,
-            vals_t,
-            np.array(owner_breakpoints) if len(owner_breakpoints) > 0 else np.array([])
+            np.linspace(p_min, p_max, price_grid_size),
+            vals_t
         ])
     )
 
     best_price = None
     best_gap = np.inf
-    best_equity = None
-    best_residual_debt = None
     best_h_actual = None
     best_debt_end = None
     best_marginal_idx = None
     best_total_desired = None
 
     for price in candidate_prices:
-        equity_t, residual_debt = compute_equity_at_candidate_price(
-            period_number=period_number,
-            candidate_price=price,
-            liquid_wealth_prev=liquid_wealth_prev,
-            housing_prev=housing_prev,
-            debt_prev=debt_prev,
-            interest_rate_t=interest_rate_t
-        )
-
         _, h_actual, debt_end, total_desired, marginal_idx = allocate_given_price(
             vals_t=vals_t,
             equity_t=equity_t,
@@ -245,28 +194,22 @@ def solve_market_period_fixed_point(
 
         gap = abs(total_desired - H_supply)
 
-        # Tie-breaker: among similar gaps, prefer lower price discrepancy
-        # and prices that do not overshoot absurdly.
         if (gap < best_gap - 1e-12) or (
-            abs(gap - best_gap) <= 1e-12 and (best_price is None or price < best_price)
+            abs(gap - best_gap) <= 1e-12 and (best_price is None or price > best_price)
         ):
             best_gap = gap
             best_price = price
-            best_equity = equity_t.copy()
-            best_residual_debt = residual_debt.copy()
             best_h_actual = h_actual.copy()
             best_debt_end = debt_end.copy()
             best_marginal_idx = marginal_idx
             best_total_desired = total_desired
 
-    regime = "fixed_point_market_clearing"
+    regime = "predetermined_equity_market_clearing"
 
     return (
         best_price,
         best_h_actual,
         best_debt_end,
-        best_equity,
-        best_residual_debt,
         best_marginal_idx,
         regime,
         best_total_desired
@@ -279,6 +222,7 @@ def advance_one_period(
     liquid_wealth_prev: np.ndarray,
     housing_prev: np.ndarray,
     debt_prev: np.ndarray,
+    last_price: float,
     H_supply: float,
     kappa_t: float,
     interest_rate_t: float,
@@ -287,8 +231,17 @@ def advance_one_period(
     base_vals: np.ndarray
 ):
     """
-    Advance one period using the fixed-point timing.
+    Advance one period under predetermined-equity timing.
     """
+    equity_before_purchase, residual_debt = compute_beginning_equity_predetermined(
+        period_number=period_number,
+        last_price=last_price,
+        liquid_wealth_prev=liquid_wealth_prev,
+        housing_prev=housing_prev,
+        debt_prev=debt_prev,
+        interest_rate_t=interest_rate_t
+    )
+
     vals_t = apply_valuation_shock(
         vals_prev=vals_prev,
         base_vals=base_vals,
@@ -300,25 +253,22 @@ def advance_one_period(
         price_t,
         housing_t,
         debt_t,
-        equity_before_purchase,
-        residual_debt,
         marginal_idx,
         regime,
         total_desired
-    ) = solve_market_period_fixed_point(
+    ) = solve_market_period_predetermined_equity(
         period_number=period_number,
         vals_t=vals_t,
-        liquid_wealth_prev=liquid_wealth_prev,
-        housing_prev=housing_prev,
-        debt_prev=debt_prev,
+        equity_t=equity_before_purchase,
+        residual_debt=residual_debt,
         H_supply=H_supply,
-        kappa_t=kappa_t,
-        interest_rate_t=interest_rate_t
+        kappa_t=kappa_t
     )
 
     buyers = housing_t > 1e-12
 
-    # Non-buyers keep liquid wealth; buyers deploy it into housing.
+    # Buyers deploy all available equity into housing.
+    # Non-buyers carry remaining liquid wealth forward.
     liquid_wealth_next = equity_before_purchase.copy()
     liquid_wealth_next[buyers] = 0.0
 
@@ -376,7 +326,12 @@ def initialize_simulation(n, V_high, V_low, E0):
     st.session_state.current_housing = np.zeros(n, dtype=float)
     st.session_state.current_debt = np.zeros(n, dtype=float)
     st.session_state.current_period = 1
-    st.session_state.last_price = np.nan
+
+    # Important:
+    # Use an initial reference price before period 1 is solved.
+    # A natural choice is the midpoint of the valuation range, though it is only used from period 2 on.
+    st.session_state.last_price = 0.5 * (V_high + V_low)
+
     st.session_state.summary_history = []
     st.session_state.household_history = pd.DataFrame()
 
@@ -385,7 +340,7 @@ def initialize_simulation(n, V_high, V_low, E0):
 # Sidebar
 # ============================================================
 
-st.title("Sequential Leverage Cycle Housing Simulator (Fixed-Point Timing)")
+st.title("Sequential Leverage Cycle Housing Simulator (Predetermined Equity Timing)")
 
 with st.sidebar:
     st.header("Global Parameters")
@@ -402,7 +357,12 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("Inputs for the NEXT period")
 
-    next_kappa = st.number_input(r"Leverage multiple for next period ($\kappa_t$)", min_value=0.0, value=5.0, step=0.1)
+    next_kappa = st.number_input(
+        r"Leverage multiple for next period ($\kappa_t$)",
+        min_value=0.0,
+        value=5.0,
+        step=0.1
+    )
     next_interest_rate_pct = st.number_input("Interest rate for next period (%)", value=0.0, step=0.5)
     next_valuation_shock_pct = st.number_input("Valuation shock for next period (%)", value=0.0, step=1.0)
 
@@ -446,6 +406,7 @@ if advance_clicked:
         liquid_wealth_prev=st.session_state.current_liquid_wealth,
         housing_prev=st.session_state.current_housing,
         debt_prev=st.session_state.current_debt,
+        last_price=st.session_state.last_price,
         H_supply=H_supply,
         kappa_t=next_kappa,
         interest_rate_t=next_interest_rate_pct / 100.0,
@@ -621,31 +582,32 @@ st.subheader("How This Version Works")
 st.markdown(
     r"""
 - You solve **one period at a time**.
-- In each period, households first liquidate old positions at the **current period price**.
-- That makes beginning-of-period equity depend on the same price that clears the new market.
-- So the app solves a **fixed-point problem** numerically.
+- At the beginning of period \(t\), households liquidate last period's housing at the **old price** \(P_{t-1}\).
+- They repay debt, so beginning-of-period equity is determined **before** solving for the new price.
+- Then current valuations are realized.
+- The current price \(P_t\) clears the market using that predetermined equity.
 
-For previous owners:
+Beginning-of-period equity:
 \[
-E_t^i(P_t)=\max\left\{P_t h_{t-1}^i-(1+r_t)d_{t-1}^i,\,0\right\}
+E_t^i=\max\left\{W_{t-1}^i + P_{t-1} h_{t-1}^i - (1+r_t)d_{t-1}^i,\ 0\right\}
 \]
 
-For previous non-owners:
+Residual debt if underwater:
 \[
-E_t^i(P_t)=\max\left\{W_{t-1}^i-(1+r_t)d_{t-1}^i,\,0\right\}
+R_t^i=\max\left\{(1+r_t)d_{t-1}^i - W_{t-1}^i - P_{t-1} h_{t-1}^i,\ 0\right\}
 \]
 
 Demand:
 \[
-h_t^i=\frac{\kappa_t E_t^i(P_t)}{P_t}
+h_t^i=\frac{\kappa_t E_t^i}{P_t}
 \quad \text{if } V_t^i>P_t
 \]
 
 Debt for actual buyers:
 \[
-D_t^i=P_t h_t^i - E_t^i(P_t)
+D_t^i=P_t h_t^i - E_t^i
 \]
 
-This timing allows a positive current shock to increase owners' current equity immediately.
+This timing removes the current-period fixed-point loop between \(P_t\) and \(E_t^i\).
 """
 )
