@@ -17,30 +17,39 @@ def make_base_valuations(n: int, v_high: float, v_low: float) -> np.ndarray:
     return np.linspace(v_high, v_low, n)
 
 
-def build_valuation_path(base_vals: np.ndarray, shock_pcts: np.ndarray, cumulative: bool = True) -> np.ndarray:
+def build_valuation_path(
+    base_vals: np.ndarray,
+    anticipated_shock_pcts: np.ndarray,
+    unanticipated_shock_pcts: np.ndarray,
+    cumulative: bool = True
+) -> np.ndarray:
     """
     Construct period-by-period valuation vectors.
 
+    Effective shock in period t:
+        total_shock_t = anticipated_shock_t + unanticipated_shock_t
+
     If cumulative=True:
-        V_t = base_vals * Π_{s<=t}(1 + shock_s)
+        V_t = base_vals * Π_{s<=t}(1 + total_shock_s)
 
     If cumulative=False:
-        V_t = base_vals * (1 + shock_t)
+        V_t = base_vals * (1 + total_shock_t)
 
-    shock_pcts must be in decimal form, e.g. 0.10 for +10%.
+    Shocks are in decimal form, e.g. 0.10 for +10%.
     """
-    T = len(shock_pcts)
+    total_shocks = anticipated_shock_pcts + unanticipated_shock_pcts
+    T = len(total_shocks)
     n = len(base_vals)
     V = np.zeros((T, n))
 
     if cumulative:
         scale = 1.0
         for t in range(T):
-            scale *= (1.0 + shock_pcts[t])
+            scale *= (1.0 + total_shocks[t])
             V[t, :] = base_vals * scale
     else:
         for t in range(T):
-            V[t, :] = base_vals * (1.0 + shock_pcts[t])
+            V[t, :] = base_vals * (1.0 + total_shocks[t])
 
     return V
 
@@ -50,19 +59,23 @@ def solve_market_period(vals_t: np.ndarray, equity_t: np.ndarray, H_supply: floa
     Solve one period of the housing market.
 
     Demand rule:
-        if V_i > P, household i buys as much as possible:
+        if V_i > P, household i buys as much housing as its leverage constraint allows:
             h_i = kappa_t * E_i / P
 
-    The market can be in one of two regimes:
+    Market regimes:
 
     1) Scarcity / marginal-buyer regime:
-       Some households do not buy because their valuations are below the price.
        The price is pinned down by the valuation of the marginal buyer.
 
     2) All-buyers / liquidity regime:
-       Even the lowest-valuation household is willing to buy at the clearing price.
-       Then everyone buys and price satisfies:
+       Everyone buys and price satisfies:
            P = kappa_t * sum(E_i) / H
+
+    IMPORTANT FIX:
+    Debt is now based on ACTUAL purchases:
+        d_i = P * h_i - E_i
+    rather than assigning full leverage debt to the marginal buyer when
+    that buyer only absorbs a residual amount of housing.
 
     Returns:
         price
@@ -84,21 +97,20 @@ def solve_market_period(vals_t: np.ndarray, equity_t: np.ndarray, H_supply: floa
         return 0.0, h, d, None, "no_buyers"
 
     # --------------------------------------------------------
-    # First check the "all buyers" / liquidity regime
+    # First check the all-buyers / liquidity regime
     # --------------------------------------------------------
     price_all = kappa_t * total_equity / H_supply
 
-    # If the clearing price with all buyers is below the lowest valuation,
-    # then everyone is willing to buy at that price.
     if price_all <= vals_t[-1]:
         price = price_all
-        h = kappa_t * equity_t / price if price > 0 else np.zeros(n)
-        buyers = h > 1e-12
-        d[buyers] = (kappa_t - 1.0) * equity_t[buyers]
+        if price > 0:
+            h = kappa_t * equity_t / price
+            buyers = h > 1e-12
+            d[buyers] = np.maximum(price * h[buyers] - equity_t[buyers], 0.0)
         return price, h, d, n - 1, "all_buyers_liquidity"
 
     # --------------------------------------------------------
-    # Otherwise we are in the scarcity / marginal-buyer regime
+    # Scarcity / marginal-buyer regime
     # --------------------------------------------------------
     for m in range(n):
         price_candidate = vals_t[m]
@@ -109,33 +121,32 @@ def solve_market_period(vals_t: np.ndarray, equity_t: np.ndarray, H_supply: floa
         demand_before_m = kappa_t * equity_t[:m].sum() / price_candidate
         demand_up_to_m = kappa_t * equity_t[:m + 1].sum() / price_candidate
 
-        # Need:
-        # top m households alone do not exhaust supply,
-        # but top m+1 households can.
         if demand_before_m <= H_supply + 1e-12 and demand_up_to_m >= H_supply - 1e-12:
             price = price_candidate
 
+            # Inframarginal buyers buy at full capacity
             if m > 0:
                 h[:m] = kappa_t * equity_t[:m] / price
 
+            # Marginal buyer takes the residual
             residual = H_supply - h[:m].sum()
             h[m] = max(0.0, residual)
 
             buyers = h > 1e-12
-            d[buyers] = (kappa_t - 1.0) * equity_t[buyers]
+
+            # FIX: debt based on actual purchase, not full capacity
+            d[buyers] = np.maximum(price * h[buyers] - equity_t[buyers], 0.0)
 
             return price, h, d, m, "scarcity_marginal_buyer"
 
     # --------------------------------------------------------
-    # Fallback:
-    # If no candidate worked, use the all-buyers price anyway.
-    # This can happen numerically or if valuations are all very low.
+    # Fallback
     # --------------------------------------------------------
     price = price_all
     if price > 0:
         h = kappa_t * equity_t / price
         buyers = h > 1e-12
-        d[buyers] = (kappa_t - 1.0) * equity_t[buyers]
+        d[buyers] = np.maximum(price * h[buyers] - equity_t[buyers], 0.0)
 
     return price, h, d, n - 1, "fallback_liquidity"
 
@@ -152,23 +163,35 @@ def simulate_model(
     """
     Simulate the model for T periods.
 
-    period_table columns:
+    Required columns in period_table:
         period
-        kappa
+        kappa_anticipated
+        kappa_unanticipated_change
         interest_rate
-        valuation_shock_pct
+        valuation_shock_anticipated_pct
+        valuation_shock_unanticipated_pct
     """
     T = len(period_table)
     base_vals = make_base_valuations(n, V_high, V_low)
 
-    shock_pcts = period_table["valuation_shock_pct"].to_numpy(dtype=float) / 100.0
-    kappas = period_table["kappa"].to_numpy(dtype=float)
+    anticipated_shock_pcts = period_table["valuation_shock_anticipated_pct"].to_numpy(dtype=float) / 100.0
+    unanticipated_shock_pcts = period_table["valuation_shock_unanticipated_pct"].to_numpy(dtype=float) / 100.0
+    total_shock_pcts = anticipated_shock_pcts + unanticipated_shock_pcts
+
+    kappa_anticipated = period_table["kappa_anticipated"].to_numpy(dtype=float)
+    kappa_unanticipated_change = period_table["kappa_unanticipated_change"].to_numpy(dtype=float)
+    kappas_effective = kappa_anticipated + kappa_unanticipated_change
+
     rates = period_table["interest_rate"].to_numpy(dtype=float) / 100.0
 
-    valuation_path = build_valuation_path(base_vals, shock_pcts, cumulative=cumulative_shocks)
+    valuation_path = build_valuation_path(
+        base_vals=base_vals,
+        anticipated_shock_pcts=anticipated_shock_pcts,
+        unanticipated_shock_pcts=unanticipated_shock_pcts,
+        cumulative=cumulative_shocks
+    )
 
-    # State variables at the start
-    equity = np.full(n, E0, dtype=float)   # exogenous in period 0
+    equity = np.full(n, E0, dtype=float)
     housing_prev = np.zeros(n, dtype=float)
     debt_prev = np.zeros(n, dtype=float)
     price_prev = np.nan
@@ -178,7 +201,7 @@ def simulate_model(
 
     for t in range(T):
         vals_t = valuation_path[t, :]
-        kappa_t = kappas[t]
+        kappa_t = max(kappas_effective[t], 0.0)
         R_t = rates[t]
 
         # ----------------------------------------------------
@@ -189,7 +212,6 @@ def simulate_model(
             residual_debt = np.zeros(n)
         else:
             raw_equity = price_prev * housing_prev - (1.0 + R_t) * debt_prev
-
             equity_before_purchase = np.maximum(raw_equity, 0.0)
 
             # If raw equity is negative, set equity to zero and carry shortfall as debt
@@ -219,9 +241,13 @@ def simulate_model(
             "period": t,
             "price": price_t,
             "regime": regime,
-            "kappa": kappa_t,
+            "kappa_anticipated": kappa_anticipated[t],
+            "kappa_unanticipated_change": kappa_unanticipated_change[t],
+            "kappa_effective": kappa_t,
             "interest_rate_pct": 100.0 * R_t,
-            "valuation_shock_pct": 100.0 * shock_pcts[t],
+            "valuation_shock_anticipated_pct": 100.0 * anticipated_shock_pcts[t],
+            "valuation_shock_unanticipated_pct": 100.0 * unanticipated_shock_pcts[t],
+            "valuation_shock_total_pct": 100.0 * total_shock_pcts[t],
             "total_equity_before_purchase": equity_before_purchase.sum(),
             "total_housing_demand": housing_t.sum(),
             "owners": owners,
@@ -243,7 +269,6 @@ def simulate_model(
                 "buyer": int(housing_t[i] > 1e-12),
             })
 
-        # Advance state
         equity = equity_before_purchase.copy()
         housing_prev = housing_t.copy()
         debt_prev = debt_t.copy()
@@ -265,10 +290,7 @@ with st.sidebar:
     st.header("Global Parameters")
 
     n = st.number_input("Number of households (n)", min_value=2, max_value=500, value=10, step=1)
-
-    # Constraint removed here: no max_value = n-1
-    H_supply = st.number_input("Number of houses (H)", min_value=0.1, value=5.0, step=1.0)
-
+    H_supply = st.number_input("Number of houses (H)", min_value=0.1, value=10.0, step=1.0)
     T = st.number_input("Number of periods (T)", min_value=1, max_value=100, value=6, step=1)
 
     st.markdown("---")
@@ -281,9 +303,13 @@ with st.sidebar:
 
     E0 = st.number_input(r"Initial equity ($E_0$)", min_value=0.0, value=100.0, step=10.0)
 
-    default_kappa = st.number_input(r"Default leverage multiple ($\kappa$)", min_value=0.01, value=5.0, step=0.1)
-    default_r = st.number_input("Default interest rate per period (%)", value=5.0, step=0.5)
-    default_shock = st.number_input("Default valuation shock per period (%)", value=0.0, step=1.0)
+    default_kappa = st.number_input(r"Default anticipated leverage multiple ($\kappa$)", min_value=0.0, value=5.0, step=0.1)
+    default_r = st.number_input("Default interest rate per period (%)", value=0.0, step=0.5)
+
+    default_anticipated_shock = st.number_input("Default anticipated valuation shock per period (%)", value=0.0, step=1.0)
+    default_unanticipated_shock = st.number_input("Default unanticipated valuation shock per period (%)", value=0.0, step=1.0)
+
+    default_unanticipated_kappa_change = st.number_input("Default unanticipated change in kappa", value=0.0, step=0.1)
 
     cumulative_shocks = st.checkbox("Make valuation shocks cumulative over time", value=True)
 
@@ -292,9 +318,11 @@ with st.sidebar:
 
     default_period_df = pd.DataFrame({
         "period": np.arange(T),
-        "kappa": np.full(T, default_kappa),
+        "kappa_anticipated": np.full(T, default_kappa),
+        "kappa_unanticipated_change": np.full(T, default_unanticipated_kappa_change),
         "interest_rate": np.full(T, default_r),
-        "valuation_shock_pct": np.full(T, default_shock),
+        "valuation_shock_anticipated_pct": np.full(T, default_anticipated_shock),
+        "valuation_shock_unanticipated_pct": np.full(T, default_unanticipated_shock),
     })
 
     period_df = st.data_editor(
@@ -313,6 +341,10 @@ if V_low > V_high:
 
 if H_supply <= 0:
     st.error("Housing supply H must be positive.")
+    st.stop()
+
+if (period_df["kappa_anticipated"] + period_df["kappa_unanticipated_change"]).min() < 0:
+    st.error("Effective kappa must be nonnegative in every period.")
     st.stop()
 
 # ============================================================
@@ -375,10 +407,10 @@ with col3:
 
 with col4:
     fig, ax = plt.subplots(figsize=(8, 4.5))
-    ax.plot(summary_df["period"], summary_df["kappa"], marker="o", label="kappa")
+    ax.plot(summary_df["period"], summary_df["kappa_effective"], marker="o", label="effective kappa")
     ax.plot(summary_df["period"], summary_df["interest_rate_pct"], marker="o", label="interest rate (%)")
-    ax.plot(summary_df["period"], summary_df["valuation_shock_pct"], marker="o", label="valuation shock (%)")
-    ax.set_title("Period Inputs")
+    ax.plot(summary_df["period"], summary_df["valuation_shock_total_pct"], marker="o", label="total valuation shock (%)")
+    ax.set_title("Effective Period Inputs")
     ax.set_xlabel("Period")
     ax.legend()
     ax.grid(True, alpha=0.3)
@@ -449,19 +481,36 @@ st.markdown(
     r"""
 **Demand.** If household \(i\) has valuation \(V_t^i > P_t\), it buys as much housing as its leverage constraint allows:
 \[
-H_t^i = \frac{\kappa_t E_t^i}{P_t}.
+h_t^i = \frac{\kappa_t E_t^i}{P_t}.
 \]
 
-**Debt.** Buyers take on debt equal to:
+**Debt.** Debt is based on the actual purchase:
 \[
-D_t^i = (\kappa_t - 1) E_t^i.
+D_t^i = P_t h_t^i - E_t^i.
 \]
+
+For inframarginal buyers this coincides with full leverage borrowing, but for the marginal buyer it can be smaller.
 
 **Equity update.** For \(t \ge 1\), equity before new purchases is:
 \[
-E_t^i = \max \left\{0,\; P_{t-1} H_{t-1}^i - (1+R_t) D_{t-1}^i \right\}.
+E_t^i = \max \left\{0,\; P_{t-1} h_{t-1}^i - (1+R_t) D_{t-1}^i \right\}.
 \]
 If this expression is negative, the shortfall is carried as residual debt.
+
+**Effective valuation shock.**
+\[
+\text{shock}_t^{\text{effective}}=
+\text{shock}_t^{\text{anticipated}}+\text{shock}_t^{\text{unanticipated}}.
+\]
+
+**Effective leverage.**
+\[
+\kappa_t^{\text{effective}}
+=
+\kappa_t^{\text{anticipated}}
++
+\Delta \kappa_t^{\text{unanticipated}}.
+\]
 
 **Price regimes.**
 
@@ -473,7 +522,5 @@ If this expression is negative, the shortfall is carried as residual debt.
    \[
    P_t = \frac{\kappa_t \sum_i E_t^i}{H}.
    \]
-
-This second regime becomes more likely when housing supply \(H\) is large relative to the number of households.
 """
 )
