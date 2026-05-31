@@ -203,10 +203,8 @@ predictors = [
 
 default_selected = {
     "GDD_Apr_Sep",
-    "GDD_Apr_Sep_sq",
     "Rain_Sep",
     "Temp_Jul",
-    "Temp_Aug",
     "Rain_Apr_May",
     "Rain_Oct_Feb",
     "Tmax_August",
