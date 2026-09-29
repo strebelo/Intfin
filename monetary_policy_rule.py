@@ -11,12 +11,11 @@ st.write(
     "Upload a CSV file with monthly data for the Federal Funds Rate, three inflation series (Headline, Core CPI, Core PCE), and the unemployment rate. "
     "You can get these data from fred.stlouisfed.org or upload the file provided"
 )
-
-st.markdown(r"""
-**Model equation**
-
-$i_t = \rho\, i_{t-3} + (1-\rho)\left(r^{*} + \pi^{*} + a(\pi_t-\pi^{*}) + b(u_t-u^{*})\right) $
-""")
+st.markdown("**Model equation**")
+st.latex(
+    r"i_t = \rho i_{t-3} + (1-\rho)"
+    r"\left[r^{*}+\pi^{*}+a(\pi_t-\pi^{*})+b(u_t-u^{*})\right]"
+)
 
 # ---- Sidebar controls ----
 st.sidebar.header("Model Parameters")
