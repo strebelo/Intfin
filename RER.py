@@ -2,6 +2,8 @@
 import csv
 import io
 import math
+import os
+import time
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -13,6 +15,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
+FRED_API = "https://api.stlouisfed.org/fred/series/observations"
 FRED = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 TE = "https://tradingeconomics.com/united-kingdom/consumer-price-index-cpi"
 ONS = "https://www.ons.gov.uk/economy/inflationandpriceindices/timeseries/d7bt/mm23"
@@ -25,16 +28,114 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+class DownloadError(Exception):
+    """Safe user-facing error; never includes a request URL or API key."""
+
+
+def request_with_retry(url, params=None):
+    """Two attempts for transient failures; separate connect/read timeouts."""
+    for attempt in range(2):
+        try:
+            response = requests.get(
+                url, params=params, timeout=(10, 60),
+                headers={"User-Agent": "GBP-RER-Teaching-App/1.1"},
+            )
+            if response.status_code in (429, 500, 502, 503, 504) and attempt == 0:
+                response.close()
+                time.sleep(1)
+                continue
+            if not response.ok:
+                status = response.status_code
+                response.close()
+                raise DownloadError(f"Source returned HTTP {status}.")
+            return response
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            if attempt == 0:
+                time.sleep(1)
+                continue
+            kind = "Timed out" if isinstance(exc, requests.Timeout) else "Connection failed"
+            raise DownloadError(f"{kind} after two attempts. Use a CSV upload or try again later.") from None
+        except requests.RequestException:
+            raise DownloadError("Download failed. Use a CSV upload or try again later.") from None
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
-def download(url, series_id=None):
-    """Cache successes and failures; Refresh data clears both."""
+def _download_success(url, series_id=None):
+    """Only successful results are returned and cached; failures raise."""
+    params = {"id": series_id, "cosd": "1999-01-01"} if series_id else None
+    response = request_with_retry(url, params)
     try:
-        response = requests.get(url, params={"id": series_id} if series_id else None,
-                                timeout=30, headers={"User-Agent": "GBP-RER-Teaching-App/1.0"})
-        response.raise_for_status()
-        return response.content.decode("utf-8-sig"), utc_now(), None
-    except (requests.RequestException, UnicodeError) as exc:
+        text = response.content.decode("utf-8-sig")
+        if not text.strip():
+            raise DownloadError("Source returned an empty response.")
+        if series_id:
+            parse_csv(text, series_id)  # Reject HTML/block pages before caching.
+        return text, utc_now()
+    finally:
+        response.close()
+
+
+def download(url, series_id=None):
+    """Keep the existing interface, but catch errors OUTSIDE the cache."""
+    try:
+        text, retrieved = _download_success(url, series_id)
+        return text, retrieved, None
+    except (DownloadError, UnicodeError, ValueError, OverflowError) as exc:
         return None, utc_now(), str(exc)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _download_fred_api(series_id, api_key):
+    response = request_with_retry(FRED_API, {
+        "series_id": series_id, "api_key": api_key, "file_type": "json",
+        "observation_start": "1999-01-01", "limit": 100000,
+    })
+    try:
+        try:
+            payload = response.json()
+        except ValueError:
+            raise DownloadError("FRED API returned invalid JSON.") from None
+        if not isinstance(payload, dict):
+            raise DownloadError("FRED API returned an unexpected response.")
+        observations = payload.get("observations")
+        if not isinstance(observations, list) or not observations:
+            raise DownloadError("FRED API returned no observations.")
+        if int(payload.get("count", len(observations))) != len(observations):
+            raise DownloadError("FRED API returned an incomplete history.")
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(["observation_date", series_id])
+        for obs in observations:
+            if not isinstance(obs, dict) or "date" not in obs or "value" not in obs:
+                raise DownloadError("FRED API returned invalid observations.")
+            writer.writerow([obs["date"], obs["value"]])
+        text = buffer.getvalue()
+        parse_csv(text, series_id)
+        return text, utc_now()
+    finally:
+        response.close()
+
+
+def download_fred(series_id, api_key=""):
+    if not api_key:
+        return download(FRED, series_id)
+    try:
+        text, retrieved = _download_fred_api(series_id, api_key)
+        return text, retrieved, None
+    except (DownloadError, ValueError, OverflowError, UnicodeError) as exc:
+        # Do not retry the same source through another host on each rerun.
+        # Original FRED CSV uploads remain available in the sidebar.
+        return None, utc_now(), str(exc)
+
+
+def get_fred_api_key():
+    key = os.environ.get("FRED_API_KEY", "").strip()
+    if key:
+        return key
+    try:
+        return str(st.secrets.get("FRED_API_KEY", "")).strip()
+    except (FileNotFoundError, st.errors.StreamlitSecretNotFoundError):
+        return ""
 
 
 def monthly_series(rows):
@@ -136,25 +237,8 @@ class Tables(HTMLParser):
 
 
 def load_supplement(current_month):
-    """Accept explicit historical actuals only; otherwise use official ONS D7BT."""
+    """Use official ONS D7BT directly; no Trading Economics HTML scraping."""
     notes = []
-    text, retrieved, error = download(TE)
-    if text:
-        # TE's summary/previous/forecast boxes are deliberately never parsed.
-        if re.search(r"2015\s*=\s*100\s*,?\s*NSA", text, re.I):
-            for table in Tables(text).tables:
-                if not table or [s.lower() for s in table[0]] != ["date", "actual"]:
-                    continue
-                try:
-                    series = monthly_series(table[1:])
-                    series = series.loc[series.index < current_month].dropna()
-                    expected = pd.date_range("1999-01-01", series.index.max(), freq="MS")
-                    if not series.empty and len(expected) > 12 and series.reindex(expected).notna().all():
-                        return series, {"source": "Trading Economics: actual all-items CPI, 2015=100, NSA",
-                                        "url": TE, "retrieved": retrieved}, notes
-                except (ValueError, OverflowError):
-                    continue
-    notes.append("Trading Economics: " + (error or "full dated actual monthly history unavailable; using ONS D7BT."))
     text, retrieved, error = download(ONS_CSV)
     if text:
         try:
@@ -277,27 +361,40 @@ def main():
     st.caption("S is U.S. dollars per British pound, measured as a monthly average.")
     current = pd.Timestamp(datetime.now(ZoneInfo("America/Chicago")).date()).to_period("M").to_timestamp()
     if st.sidebar.button("Refresh data"):
-        download.clear()
-    with st.sidebar.expander("CSV uploads if downloads fail"):
-        st.write("Use original FRED CSVs, one per series. Uploads are used only if that download fails.")
+        _download_success.clear()
+        _download_fred_api.clear()
+    with st.sidebar.expander("CSV uploads / connection settings"):
+        st.write("Use original FRED CSVs, one per series. Uploads take priority and skip online requests for those inputs.")
         uploads = {key: st.file_uploader("FRED " + sid, type="csv", key=sid) for key, sid in IDS.items()}
         source = st.selectbox("Supplementary UK CPI source", ["ONS D7BT", "Trading Economics"])
         upload = st.file_uploader("Supplementary UK CPI CSV", type="csv", key="supplement")
         confirmed = st.checkbox("I verified these are actual monthly UK all-items CPI levels, 2015=100, NSA.")
         st.caption("Supplementary CSV: date,cpi; or the original ONS D7BT download. Include an overlap with FRED.")
 
+    api_key = get_fred_api_key()
+    st.sidebar.caption("FRED API enabled." if api_key else
+                       "FRED CSV downloads enabled. Optional: set FRED_API_KEY in app secrets to use the API.")
     fred, metadata, notices = {}, {}, []
     with st.spinner("Loading monthly source data..."):
         with ThreadPoolExecutor(max_workers=3) as pool:
-            results = list(pool.map(lambda sid: download(FRED, sid), IDS.values()))
-        for (key, sid), (text, retrieved, error) in zip(IDS.items(), results):
+            pending = {key: pool.submit(download_fred, sid, api_key)
+                       for key, sid in IDS.items() if uploads[key] is None}
+            results = {key: future.result() for key, future in pending.items()}
+        for key, sid in IDS.items():
             try:
-                if error:
-                    raise ValueError(error)
+                if uploads[key] is not None:
+                    text = uploads[key].getvalue().decode("utf-8-sig")
+                    retrieved = utc_now()
+                    label = "FRED CSV upload: " + sid
+                else:
+                    text, retrieved, error = results[key]
+                    if error:
+                        raise ValueError(error)
+                    label = "FRED " + sid + (" (API)" if api_key else " (CSV)")
                 series = parse_csv(text, sid)
-                meta = {"source": "FRED " + sid, "url": f"https://fred.stlouisfed.org/series/{sid}", "retrieved": retrieved}
+                meta = {"source": label, "url": f"https://fred.stlouisfed.org/series/{sid}", "retrieved": retrieved}
                 st.session_state["verified_" + sid] = (series, meta)
-            except (ValueError, OverflowError, TypeError) as exc:
+            except (ValueError, OverflowError, TypeError, UnicodeError) as exc:
                 notices.append(f"{sid} download unavailable: {exc}")
                 saved = st.session_state.get("verified_" + sid)
                 if uploads[key] is not None:
@@ -316,9 +413,11 @@ def main():
                 else:
                     continue
             fred[key], metadata[key] = series, meta
-        supplement, supplement_meta, supplement_notes = load_supplement(current)
-        notices.extend(supplement_notes)
-        if supplement is None and upload is not None:
+        supplement, supplement_meta = None, None
+        if upload is None:
+            supplement, supplement_meta, supplement_notes = load_supplement(current)
+            notices.extend(supplement_notes)
+        else:
             try:
                 if not confirmed:
                     raise ValueError("Confirm the supplementary CPI definition before using this upload.")
@@ -352,7 +451,7 @@ def main():
                  f"{splice['count']} later monthly UK CPI values added. Source: {supplement_meta['source']}.")
         st.latex(r"P_t^{UK}=P_m^{UK,\mathrm{FRED}}\left(P_t^{UK,\mathrm{new}}/P_m^{UK,\mathrm{new}}\right),\quad t>m")
     st.caption("UK definitions: FRED GBRCPIALLMINMEI is OECD total/all-items CPI, 2015=100, NSA; "
-               "ONS D7BT is CPI INDEX 00: ALL ITEMS 2015=100. Trading Economics identifies its matching index as 2015=100, NSA, sourced from ONS.")
+               "ONS D7BT is CPI INDEX 00: ALL ITEMS 2015=100. Automatic UK CPI extension uses ONS directly; Trading Economics CSV uploads require confirmation of this definition.")
     if audit["US_estimated"].any():
         st.warning("October 2025 U.S. CPI is estimated as the average of observed September and November 2025 levels.")
     source_rows = [{"input": key, **meta} for key, meta in metadata.items()]
