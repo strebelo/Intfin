@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import requests
 import streamlit as st
 
@@ -501,37 +502,68 @@ def prepare_inputs(numerator, denominator, results, estimate_october=True):
     return frame
 
 
-def calculate_indexes(frame, base_month):
-    """Always rebase the full common sample before applying chart dates."""
-    base = pd.Timestamp(base_month)
-    if base not in frame.index:
-        raise DataError("Choose a base month with all required observations.")
-    result = frame.copy()
-    result["real_index"] = 100 * (result["RER"] / result.loc[base, "RER"])
-    result["nominal_index"] = 100 * (result["S_denominator_per_numerator"] / result.loc[base, "S_denominator_per_numerator"])
+def calculate_indexes(frame, start_month=None, end_month=None):
+    """Select the analysis sample, then normalize RER by that sample's mean."""
+    result = frame.loc[start_month:end_month].copy()
+    if result.empty:
+        raise DataError("The selected analysis sample contains no valid months.")
+    # Older exports may contain indexes and metadata from the previous design.
+    result = result.drop(columns=["nominal_index", "base_month", "nominal_base_month"], errors="ignore")
+    rer_mean = float(result["RER"].mean())
+    if not math.isfinite(rer_mean) or rer_mean <= 0:
+        raise DataError("The selected sample's RER average must be finite and positive.")
+    result["rer_sample_mean"] = rer_mean
+    result["real_index"] = 100 * (result["RER"] / rer_mean)
+    result["analysis_sample_start"] = result.index[0].strftime("%Y-%m")
+    result["analysis_sample_end"] = result.index[-1].strftime("%Y-%m")
     return result
 
 
-def make_figure(frame, start, end, numerator_name, denominator_name, base_month, view="Both"):
+def exchange_rate_units(numerator, denominator):
+    labels = {"USA": "USD", "GBR": "GBP", "JPN": "JPY", "CHN": "CNY",
+              "CAN": "CAD", "AUS": "AUD", "NZL": "NZD", "CHE": "CHF",
+              "IND": "INR", "BRA": "BRL", "MEX": "MXN", "KOR": "KRW",
+              "NOR": "NOK", "SWE": "SEK", "DNK": "DKK", "POL": "PLN", "ZAF": "ZAR"}
+    def label(country):
+        if country in EURO_ADOPTION:
+            return "EUR"
+        return labels.get(country, f"{COUNTRY_NAMES[country]} currency units")
+    return f"{label(denominator)} per {label(numerator)}"
+
+
+def make_figure(frame, numerator_name, denominator_name, nominal_units, view="Both"):
     # Reindex only the display frame so Plotly leaves gaps at missing months.
-    display = frame.loc[pd.Timestamp(start):pd.Timestamp(end)].reindex(
-        pd.date_range(start, end, freq="MS"))
-    fig = go.Figure()
+    display = frame.reindex(pd.date_range(frame.index[0], frame.index[-1], freq="MS"))
+    fig = make_subplots(specs=[[{"secondary_y": True}]]) if view == "Both" else go.Figure()
     for column, label, color in [("real_index", "Real exchange rate", "#b32232"),
-                                 ("nominal_index", "Nominal exchange rate", "#175e9d")]:
+                                 ("S_denominator_per_numerator", "Nominal exchange rate", "#175e9d")]:
         if view == "Real" and column != "real_index":
             continue
-        if view == "Nominal" and column != "nominal_index":
+        if view == "Nominal" and column != "S_denominator_per_numerator":
             continue
-        fig.add_trace(go.Scatter(x=display.index, y=display[column], name=label,
-                                mode="lines", line={"color": color, "width": 2.5},
-                                connectgaps=False, hovertemplate="%{x|%b %Y}: %{y:.2f}<extra>%{fullData.name}</extra>"))
-    fig.add_hline(y=100, line_color="#888888", line_dash="dash")
+        hover = ("%{x|%b %Y}: %{y:.2f}<extra>%{fullData.name}</extra>" if column == "real_index"
+                 else "%{x|%b %Y}: %{y:.5f} " + nominal_units + "<extra>%{fullData.name}</extra>")
+        trace = go.Scatter(x=display.index, y=display[column], name=label,
+                           mode="lines", line={"color": color, "width": 2.5},
+                           connectgaps=False, hovertemplate=hover)
+        if view == "Both":
+            fig.add_trace(trace, secondary_y=(column != "real_index"))
+        else:
+            fig.add_trace(trace)
+    real_title = "Real exchange rate (sample average = 100)"
+    nominal_title = f"Nominal exchange rate ({nominal_units})"
+    if view == "Both":
+        fig.update_yaxes(title_text=real_title, secondary_y=False, color="#b32232")
+        fig.update_yaxes(title_text=nominal_title, secondary_y=True, color="#175e9d", showgrid=False)
+        fig.add_hline(y=100, line_color="#888888", line_dash="dash", secondary_y=False)
+    else:
+        fig.update_yaxes(title_text=real_title if view == "Real" else nominal_title)
+        if view == "Real":
+            fig.add_hline(y=100, line_color="#888888", line_dash="dash")
     fig.update_layout(template="plotly_white", height=510,
                       title={"text": f"{numerator_name} relative to {denominator_name}", "font": {"color": "#b32232", "size": 22}},
-                      yaxis_title=f"Index ({pd.Timestamp(base_month):%b %Y} = 100)",
                       xaxis_title=None, hovermode="x unified", legend={"orientation": "h", "y": 1.12},
-                      margin={"l": 55, "r": 20, "t": 105, "b": 50})
+                      margin={"l": 65, "r": 85 if view == "Both" else 25, "t": 105, "b": 50})
     return fig
 
 
@@ -553,13 +585,15 @@ def render_graph(frame, numerator, denominator, source_label):
                        "months before euro adoption are excluded.")
     months = [date.strftime("%Y-%m") for date in frame.index]
     pair = f"{numerator}_{denominator}_{source_label}"
-    base_month = st.selectbox("Base month (index = 100)", months, index=0, key=f"base_{pair}")
-    indexed = calculate_indexes(frame, base_month)
     if len(months) > 1:
-        start, end = st.select_slider("Months shown on the graph", months,
-                                      value=(months[0], months[-1]), key=f"range_{pair}")
+        start, end = st.select_slider("Analysis sample (start and end months)", months,
+                                      value=(months[0], months[-1]), key=f"sample_{pair}")
     else:
         start = end = months[0]
+    indexed = calculate_indexes(frame, start, end)
+    nominal_units = exchange_rate_units(numerator, denominator)
+    st.caption(f"Real index: selected sample average = 100 ({start} to {end}). "
+               f"Nominal rate shown in actual units: {nominal_units}.")
     view_key = f"view_{pair}"
     if view_key not in st.session_state:
         st.session_state[view_key] = "Both"
@@ -568,24 +602,31 @@ def render_graph(frame, numerator, denominator, source_label):
         column.button(option, key=f"button_{option}_{pair}",
                       type="primary" if st.session_state[view_key] == option else "secondary",
                       on_click=set_chart_view, args=(view_key, option), width="stretch")
-    st.plotly_chart(make_figure(indexed, start, end, numerator_name, denominator_name,
-                              base_month, st.session_state[view_key]),
+    st.plotly_chart(make_figure(indexed, numerator_name, denominator_name,
+                              nominal_units, st.session_state[view_key]),
                     width="stretch")
     estimated = indexed["cpi_numerator_estimated"].any() or indexed["cpi_denominator_estimated"].any()
     if estimated:
         st.info("October 2025 U.S. CPI is estimated as the average of September and November. "
                 "The estimate is flagged in the table and CSV.")
     grid = pd.date_range(indexed.index.min(), indexed.index.max(), freq="MS")
-    st.caption(f"Common sample: {months[0]} to {months[-1]} · {len(indexed):,} valid months · "
+    st.caption(f"Selected sample: {start} to {end} · {len(indexed):,} valid months · "
                f"{len(grid) - len(indexed):,} missing common months · {source_label}.")
-    st.caption("An index above 100 means appreciation since the base month; it does not establish overvaluation. "
+    st.caption(f"Available common data: {months[0]} to {months[-1]}.")
+    st.caption("A real index above 100 is above the selected-sample RER average; it does not establish overvaluation. "
                "Countries' CPI baskets differ. Data are current revised observations, subject to IMF revisions.")
     with st.expander("Calculation and source details"):
         st.write("The IMF CPI series is the monthly national all-items index (CPI._T.IX.M). "
                  "Euro area uses its aggregate harmonised all-items index (G163.HICP._T.IX.M). "
                  "Exchange rates are monthly period averages in local currency per U.S. dollar (XDC_USD.PA_RT.M). "
                  "S = (denominator currency per dollar) / (numerator currency per dollar). "
-                 "For USD, the rate is exactly 1 by definition. CPI reference years may differ: rebasing "
+                 "For USD, the rate is exactly 1 by definition. Real index = 100 × RER / mean(RER), "
+                 "where the arithmetic mean uses every valid month in the selected analysis sample. "
+                 "Changing the sample dates recalculates the benchmark; chart zoom and line buttons do not. "
+                 "The nominal exchange rate is S itself, without normalization. When both are shown, "
+                 "the left axis is the real index and the right axis is the nominal rate in actual units. "
+                 "Refreshing data can change the benchmark when observations are added or revised. "
+                 "CPI reference years may differ: normalizing "
                  "the final index removes their constant scale factors. The ratio of two monthly-average "
                  "USD rates is an approximation to the monthly average of the daily bilateral rate. "
                  "Other currency redenominations or methodological breaks may require extra treatment.")
@@ -597,7 +638,7 @@ def render_graph(frame, numerator, denominator, source_label):
     exported["denominator_country"] = denominator
     exported["cpi_numerator_type"] = "HICP" if numerator == "G163" else "CPI"
     exported["cpi_denominator_type"] = "HICP" if denominator == "G163" else "CPI"
-    exported["base_month"] = base_month
+    exported["nominal_units"] = nominal_units
     st.download_button("Download data (CSV)", exported.to_csv(index=False).encode("utf-8"),
                        file_name=f"rer_{numerator}_{denominator}.csv", mime="text/csv", key=f"export_{pair}")
     with st.expander("Data table"):
@@ -647,7 +688,7 @@ def read_saved_export(file):
 def main():
     st.set_page_config(page_title="Two-country real exchange rate", layout="wide")
     st.title("Two-country real exchange rate")
-    st.write("Choose two countries or the Euro area in the price-index ratio. The app downloads monthly IMF data and plots real and nominal exchange rate indexes.")
+    st.write("Choose two countries or the Euro area and an analysis sample. The app plots the real exchange rate normalized to a sample average of 100 and the nominal exchange rate in actual units.")
     mode = st.radio("Data source", ["Live IMF data", "Saved CSV export"], horizontal=True)
     if mode == "Saved CSV export":
         uploaded = st.file_uploader("CSV previously downloaded from this app", type="csv")
