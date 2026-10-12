@@ -266,10 +266,12 @@ COUNTRY_NAMES = {'ABW': 'Aruba, Kingdom of the Netherlands',
 
 
 API_BASE = "https://api.imf.org/external/sdmx/3.0"
-START_MONTH = "1999-01"
+COUNTRY_NAMES["G163"] = "Euro area"
+START_MONTH = "1976-01"
 # Use the euro-area ER series only from the country's euro adoption onward.
 # Do not splice legacy currency units onto euros.
 EURO_ADOPTION = {
+    "G163": "1999-01",
     "AUT": "1999-01", "BEL": "1999-01", "DEU": "1999-01",
     "ESP": "1999-01", "FIN": "1999-01", "FRA": "1999-01",
     "IRL": "1999-01", "ITA": "1999-01", "LUX": "1999-01",
@@ -432,9 +434,10 @@ def parse_series(payload, expected):
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_series(flow, country, api_key=""):
     if flow == "CPI":
-        expected = {"COUNTRY": country, "INDEX_TYPE": "CPI", "COICOP_1999": "_T",
+        index_type = "HICP" if country == "G163" else "CPI"
+        expected = {"COUNTRY": country, "INDEX_TYPE": index_type, "COICOP_1999": "_T",
                     "TYPE_OF_TRANSFORMATION": "IX", "FREQUENCY": "M"}
-        key = f"{country}.CPI._T.IX.M"
+        key = f"{country}.{index_type}._T.IX.M"
     else:
         expected = {"COUNTRY": country, "INDICATOR": "XDC_USD",
                     "TYPE_OF_TRANSFORMATION": "PA_RT", "FREQUENCY": "M"}
@@ -490,7 +493,7 @@ def prepare_inputs(numerator, denominator, results, estimate_october=True):
     keep = frame[required].notna().all(axis=1) & (frame[required] > 0).all(axis=1)
     frame = frame.loc[keep].copy()
     if frame.empty:
-        raise DataError("These countries have no common valid monthly sample from January 1999 onward.")
+        raise DataError("These countries have no common valid monthly sample from January 1976 onward.")
     # Both q rates are local-currency units per USD. Their ratio is
     # denominator-currency units per numerator-currency unit.
     frame["S_denominator_per_numerator"] = frame["fx_denominator_per_usd"] / frame["fx_numerator_per_usd"]
@@ -509,13 +512,17 @@ def calculate_indexes(frame, base_month):
     return result
 
 
-def make_figure(frame, start, end, numerator_name, denominator_name, base_month):
+def make_figure(frame, start, end, numerator_name, denominator_name, base_month, view="Both"):
     # Reindex only the display frame so Plotly leaves gaps at missing months.
     display = frame.loc[pd.Timestamp(start):pd.Timestamp(end)].reindex(
         pd.date_range(start, end, freq="MS"))
     fig = go.Figure()
     for column, label, color in [("real_index", "Real exchange rate", "#b32232"),
                                  ("nominal_index", "Nominal exchange rate", "#175e9d")]:
+        if view == "Real" and column != "real_index":
+            continue
+        if view == "Nominal" and column != "nominal_index":
+            continue
         fig.add_trace(go.Scatter(x=display.index, y=display[column], name=label,
                                 mode="lines", line={"color": color, "width": 2.5},
                                 connectgaps=False, hovertemplate="%{x|%b %Y}: %{y:.2f}<extra>%{fullData.name}</extra>"))
@@ -528,14 +535,20 @@ def make_figure(frame, start, end, numerator_name, denominator_name, base_month)
     return fig
 
 
+def set_chart_view(key, view):
+    st.session_state[key] = view
+
+
 def render_graph(frame, numerator, denominator, source_label):
     numerator_name, denominator_name = COUNTRY_NAMES[numerator], COUNTRY_NAMES[denominator]
     st.subheader(f"{numerator_name} / {denominator_name}")
     st.latex(r"\mathrm{RER}_t=S_t\frac{P_t^{\mathrm{numerator}}}{P_t^{\mathrm{denominator}}}")
     st.write(f"S is {denominator_name}'s currency units per unit of {numerator_name}'s currency. "
              f"A rise means **real appreciation of {numerator_name} relative to {denominator_name}**.")
+    if "G163" in (numerator, denominator):
+        st.caption("Euro area uses the aggregate all-items HICP and the euro exchange rate.")
     for country in (numerator, denominator):
-        if country in EURO_ADOPTION:
+        if country in EURO_ADOPTION and country != "G163":
             st.caption(f"{COUNTRY_NAMES[country]}: euro exchange rate from {EURO_ADOPTION[country]}; "
                        "months before euro adoption are excluded.")
     months = [date.strftime("%Y-%m") for date in frame.index]
@@ -547,7 +560,16 @@ def render_graph(frame, numerator, denominator, source_label):
                                       value=(months[0], months[-1]), key=f"range_{pair}")
     else:
         start = end = months[0]
-    st.plotly_chart(make_figure(indexed, start, end, numerator_name, denominator_name, base_month),
+    view_key = f"view_{pair}"
+    if view_key not in st.session_state:
+        st.session_state[view_key] = "Both"
+    st.markdown("**Show on the graph**")
+    for column, option in zip(st.columns(3), ["Real", "Nominal", "Both"]):
+        column.button(option, key=f"button_{option}_{pair}",
+                      type="primary" if st.session_state[view_key] == option else "secondary",
+                      on_click=set_chart_view, args=(view_key, option), width="stretch")
+    st.plotly_chart(make_figure(indexed, start, end, numerator_name, denominator_name,
+                              base_month, st.session_state[view_key]),
                     width="stretch")
     estimated = indexed["cpi_numerator_estimated"].any() or indexed["cpi_denominator_estimated"].any()
     if estimated:
@@ -560,6 +582,7 @@ def render_graph(frame, numerator, denominator, source_label):
                "Countries' CPI baskets differ. Data are current revised observations, subject to IMF revisions.")
     with st.expander("Calculation and source details"):
         st.write("The IMF CPI series is the monthly national all-items index (CPI._T.IX.M). "
+                 "Euro area uses its aggregate harmonised all-items index (G163.HICP._T.IX.M). "
                  "Exchange rates are monthly period averages in local currency per U.S. dollar (XDC_USD.PA_RT.M). "
                  "S = (denominator currency per dollar) / (numerator currency per dollar). "
                  "For USD, the rate is exactly 1 by definition. CPI reference years may differ: rebasing "
@@ -572,6 +595,8 @@ def render_graph(frame, numerator, denominator, source_label):
     exported["month"] = exported["month"].dt.strftime("%Y-%m")
     exported["numerator_country"] = numerator
     exported["denominator_country"] = denominator
+    exported["cpi_numerator_type"] = "HICP" if numerator == "G163" else "CPI"
+    exported["cpi_denominator_type"] = "HICP" if denominator == "G163" else "CPI"
     exported["base_month"] = base_month
     st.download_button("Download data (CSV)", exported.to_csv(index=False).encode("utf-8"),
                        file_name=f"rer_{numerator}_{denominator}.csv", mime="text/csv", key=f"export_{pair}")
@@ -622,7 +647,7 @@ def read_saved_export(file):
 def main():
     st.set_page_config(page_title="Two-country real exchange rate", layout="wide")
     st.title("Two-country real exchange rate")
-    st.write("Choose the two countries in the CPI ratio. The app downloads monthly IMF data and plots real and nominal exchange rate indexes.")
+    st.write("Choose two countries or the Euro area in the price-index ratio. The app downloads monthly IMF data and plots real and nominal exchange rate indexes.")
     mode = st.radio("Data source", ["Live IMF data", "Saved CSV export"], horizontal=True)
     if mode == "Saved CSV export":
         uploaded = st.file_uploader("CSV previously downloaded from this app", type="csv")
