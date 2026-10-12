@@ -1,501 +1,687 @@
-"""Python 3.12: monthly GBP real exchange rate, with auditable inputs."""
-import csv
-import io
+"""Two-country monthly real exchange rate app using the current IMF API.
+
+Run with: streamlit run app.py
+"""
+from __future__ import annotations
+
 import math
-import os
-import time
 import re
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from html.parser import HTMLParser
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-FRED_API = "https://api.stlouisfed.org/fred/series/observations"
-FRED = "https://fred.stlouisfed.org/graph/fredgraph.csv"
-TE = "https://tradingeconomics.com/united-kingdom/consumer-price-index-cpi"
-ONS = "https://www.ons.gov.uk/economy/inflationandpriceindices/timeseries/d7bt/mm23"
-ONS_CSV = "https://www.ons.gov.uk/generator?format=csv&uri=" + ONS.split(".uk")[1]
-IDS = {"S": "EXUSUK", "US": "CPIAUCNS", "UK": "GBRCPIALLMINMEI"}
-MONTHS = dict(zip("JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC".split(), range(1, 13)))
+# Country names from the IMF country codelist, restricted to ISO country codes.
+COUNTRY_NAMES = {'ABW': 'Aruba, Kingdom of the Netherlands',
+ 'AFG': 'Afghanistan, Islamic Republic of',
+ 'AGO': 'Angola',
+ 'AIA': 'Anguilla, United Kingdom-British Overseas Territory',
+ 'ALA': 'Åland Islands',
+ 'ALB': 'Albania',
+ 'AND': 'Andorra, Principality of',
+ 'ARE': 'United Arab Emirates',
+ 'ARG': 'Argentina',
+ 'ARM': 'Armenia, Republic of',
+ 'ASM': 'American Samoa',
+ 'ATF': 'French Southern Territories',
+ 'ATG': 'Antigua and Barbuda',
+ 'AUS': 'Australia',
+ 'AUT': 'Austria',
+ 'AZE': 'Azerbaijan, Republic of',
+ 'BDI': 'Burundi',
+ 'BEL': 'Belgium',
+ 'BEN': 'Benin',
+ 'BES': 'Bonaire, Saint Eustatius and Saba',
+ 'BFA': 'Burkina Faso',
+ 'BGD': 'Bangladesh',
+ 'BGR': 'Bulgaria',
+ 'BHR': 'Bahrain, Kingdom of',
+ 'BHS': 'Bahamas, The',
+ 'BIH': 'Bosnia and Herzegovina',
+ 'BLM': 'Saint Barthelemy',
+ 'BLR': 'Belarus, Republic of',
+ 'BLZ': 'Belize',
+ 'BMU': 'Bermuda',
+ 'BOL': 'Bolivia',
+ 'BRA': 'Brazil',
+ 'BRB': 'Barbados',
+ 'BRN': 'Brunei Darussalam',
+ 'BTN': 'Bhutan',
+ 'BVT': 'Bouvet Island',
+ 'BWA': 'Botswana',
+ 'CAF': 'Central African Republic',
+ 'CAN': 'Canada',
+ 'CCK': 'Cocos Islands',
+ 'CHE': 'Switzerland',
+ 'CHL': 'Chile',
+ 'CHN': "China, People's Republic of",
+ 'CIV': "Côte d'Ivoire",
+ 'CMR': 'Cameroon',
+ 'COD': 'Congo, Democratic Republic of the',
+ 'COG': 'Congo, Republic of',
+ 'COK': 'Cook Islands',
+ 'COL': 'Colombia',
+ 'COM': 'Comoros, Union of the',
+ 'CPV': 'Cabo Verde',
+ 'CRI': 'Costa Rica',
+ 'CUB': 'Cuba',
+ 'CUW': 'Curaçao, Kingdom of the Netherlands',
+ 'CXR': 'Christmas Island',
+ 'CYM': 'Cayman Islands',
+ 'CYP': 'Cyprus',
+ 'CZE': 'Czech Republic',
+ 'DEU': 'Germany',
+ 'DJI': 'Djibouti',
+ 'DMA': 'Dominica',
+ 'DNK': 'Denmark',
+ 'DOM': 'Dominican Republic',
+ 'DZA': 'Algeria',
+ 'ECU': 'Ecuador',
+ 'EGY': 'Egypt, Arab Republic of',
+ 'ERI': 'Eritrea, The State of',
+ 'ESH': 'Western Sahara',
+ 'ESP': 'Spain',
+ 'EST': 'Estonia, Republic of',
+ 'ETH': 'Ethiopia, The Federal Democratic Republic of',
+ 'FIN': 'Finland',
+ 'FJI': 'Fiji, Republic of',
+ 'FLK': 'Falkland Islands (Malvinas)',
+ 'FRA': 'France',
+ 'FRO': 'Faroe Islands',
+ 'FSM': 'Micronesia, Federated States of',
+ 'GAB': 'Gabon',
+ 'GBR': 'United Kingdom',
+ 'GEO': 'Georgia',
+ 'GGY': 'Guernsey',
+ 'GHA': 'Ghana',
+ 'GIB': 'Gibraltar',
+ 'GIN': 'Guinea',
+ 'GLP': 'Guadeloupe',
+ 'GMB': 'Gambia, The',
+ 'GNB': 'Guinea-Bissau',
+ 'GNQ': 'Equatorial Guinea, Republic of',
+ 'GRC': 'Greece',
+ 'GRD': 'Grenada',
+ 'GRL': 'Greenland',
+ 'GTM': 'Guatemala',
+ 'GUF': 'French Guiana',
+ 'GUM': 'Guam',
+ 'GUY': 'Guyana',
+ 'HKG': "Hong Kong Special Administrative Region, People's Republic of China",
+ 'HMD': 'Heard Island and McDonald Islands',
+ 'HND': 'Honduras',
+ 'HRV': 'Croatia, Republic of',
+ 'HTI': 'Haiti',
+ 'HUN': 'Hungary',
+ 'IDN': 'Indonesia',
+ 'IMN': 'Isle of Man',
+ 'IND': 'India',
+ 'IOT': 'British Indian Ocean Territory',
+ 'IRL': 'Ireland',
+ 'IRN': 'Iran, Islamic Republic of',
+ 'IRQ': 'Iraq',
+ 'ISL': 'Iceland',
+ 'ISR': 'Israel',
+ 'ITA': 'Italy',
+ 'JAM': 'Jamaica',
+ 'JEY': 'Jersey',
+ 'JOR': 'Jordan',
+ 'JPN': 'Japan',
+ 'KAZ': 'Kazakhstan, Republic of',
+ 'KEN': 'Kenya',
+ 'KGZ': 'Kyrgyz Republic',
+ 'KHM': 'Cambodia',
+ 'KIR': 'Kiribati',
+ 'KNA': 'St. Kitts and Nevis',
+ 'KOR': 'Korea, Republic of',
+ 'KWT': 'Kuwait',
+ 'LAO': "Lao People's Democratic Republic",
+ 'LBN': 'Lebanon',
+ 'LBR': 'Liberia',
+ 'LBY': 'Libya',
+ 'LCA': 'St. Lucia',
+ 'LIE': 'Liechtenstein, Principality of',
+ 'LKA': 'Sri Lanka',
+ 'LSO': 'Lesotho, Kingdom of',
+ 'LTU': 'Lithuania, Republic of',
+ 'LUX': 'Luxembourg',
+ 'LVA': 'Latvia, Republic of',
+ 'MAC': "Macao Special Administrative Region, People's Republic of China",
+ 'MAF': 'Saint Martin',
+ 'MAR': 'Morocco',
+ 'MCO': 'Monaco',
+ 'MDA': 'Moldova, Republic of',
+ 'MDG': 'Madagascar, Republic of',
+ 'MDV': 'Maldives',
+ 'MEX': 'Mexico',
+ 'MHL': 'Marshall Islands, Republic of the',
+ 'MKD': 'North Macedonia, Republic of',
+ 'MLI': 'Mali',
+ 'MLT': 'Malta',
+ 'MMR': 'Myanmar',
+ 'MNE': 'Montenegro',
+ 'MNG': 'Mongolia',
+ 'MNP': 'Northern Mariana Islands',
+ 'MOZ': 'Mozambique, Republic of',
+ 'MRT': 'Mauritania, Islamic Republic of',
+ 'MSR': 'Montserrat, United Kingdom-British Overseas Territory',
+ 'MTQ': 'Martinique',
+ 'MUS': 'Mauritius',
+ 'MWI': 'Malawi',
+ 'MYS': 'Malaysia',
+ 'MYT': 'Mayotte',
+ 'NAM': 'Namibia',
+ 'NCL': 'New Caledonia',
+ 'NER': 'Niger',
+ 'NFK': 'Norfolk Island',
+ 'NGA': 'Nigeria',
+ 'NIC': 'Nicaragua',
+ 'NIU': 'Niue',
+ 'NLD': 'Netherlands, The',
+ 'NOR': 'Norway',
+ 'NPL': 'Nepal',
+ 'NRU': 'Naoero, Republic of',
+ 'NZL': 'New Zealand',
+ 'OMN': 'Oman',
+ 'PAK': 'Pakistan',
+ 'PAN': 'Panama',
+ 'PCN': 'Pitcairn Islands',
+ 'PER': 'Peru',
+ 'PHL': 'Philippines',
+ 'PLW': 'Palau, Republic of',
+ 'PNG': 'Papua New Guinea',
+ 'POL': 'Poland, Republic of',
+ 'PRI': 'Puerto Rico',
+ 'PRK': "Korea, Democratic People's Republic of",
+ 'PRT': 'Portugal',
+ 'PRY': 'Paraguay',
+ 'PYF': 'French Polynesia',
+ 'QAT': 'Qatar',
+ 'REU': 'Réunion',
+ 'ROU': 'Romania',
+ 'RUS': 'Russian Federation',
+ 'RWA': 'Rwanda',
+ 'SAU': 'Saudi Arabia',
+ 'SDN': 'Sudan',
+ 'SEN': 'Senegal',
+ 'SGP': 'Singapore',
+ 'SGS': 'South Georgia and the South Sandwich Islands',
+ 'SHN': 'St. Helena',
+ 'SJM': 'Svalbard and Jan Mayen Islands',
+ 'SLB': 'Solomon Islands',
+ 'SLE': 'Sierra Leone',
+ 'SLV': 'El Salvador',
+ 'SMR': 'San Marino, Republic of',
+ 'SOM': 'Somalia',
+ 'SPM': 'St. Pierre and Miquelon',
+ 'SRB': 'Serbia, Republic of',
+ 'SSD': 'South Sudan, Republic of',
+ 'STP': 'São Tomé and Príncipe, Democratic Republic of',
+ 'SUR': 'Suriname',
+ 'SVK': 'Slovak Republic',
+ 'SVN': 'Slovenia, Republic of',
+ 'SWE': 'Sweden',
+ 'SWZ': 'Eswatini, Kingdom of',
+ 'SXM': 'Sint Maarten, Kingdom of the Netherlands',
+ 'SYC': 'Seychelles',
+ 'SYR': 'Syrian Arab Republic',
+ 'TCA': 'Turks and Caicos Islands',
+ 'TCD': 'Chad',
+ 'TGO': 'Togo',
+ 'THA': 'Thailand',
+ 'TJK': 'Tajikistan, Republic of',
+ 'TKL': 'Tokelau',
+ 'TKM': 'Turkmenistan',
+ 'TLS': 'Timor-Leste, Democratic Republic of',
+ 'TON': 'Tonga',
+ 'TTO': 'Trinidad and Tobago',
+ 'TUN': 'Tunisia',
+ 'TUR': 'Türkiye, Republic of',
+ 'TUV': 'Tuvalu',
+ 'TWN': 'Taiwan Province of China',
+ 'TZA': 'Tanzania, United Republic of',
+ 'UGA': 'Uganda',
+ 'UKR': 'Ukraine',
+ 'UMI': 'United States Minor Outlying Islands',
+ 'URY': 'Uruguay',
+ 'USA': 'United States',
+ 'UZB': 'Uzbekistan, Republic of',
+ 'VAT': 'Holy See',
+ 'VCT': 'St. Vincent and the Grenadines',
+ 'VEN': 'Venezuela, República Bolivariana de',
+ 'VGB': 'British Virgin Islands',
+ 'VIR': 'United States Virgin Islands',
+ 'VNM': 'Vietnam',
+ 'VUT': 'Vanuatu',
+ 'WLF': 'Wallis and Futuna Islands',
+ 'WSM': 'Samoa',
+ 'YEM': 'Yemen, Republic of',
+ 'ZAF': 'South Africa',
+ 'ZMB': 'Zambia',
+ 'ZWE': 'Zimbabwe'}
 
 
-def utc_now():
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+API_BASE = "https://api.imf.org/external/sdmx/3.0"
+START_MONTH = "1999-01"
+# Use the euro-area ER series only from the country's euro adoption onward.
+# Do not splice legacy currency units onto euros.
+EURO_ADOPTION = {
+    "AUT": "1999-01", "BEL": "1999-01", "DEU": "1999-01",
+    "ESP": "1999-01", "FIN": "1999-01", "FRA": "1999-01",
+    "IRL": "1999-01", "ITA": "1999-01", "LUX": "1999-01",
+    "NLD": "1999-01", "PRT": "1999-01", "GRC": "2001-01",
+    "SVN": "2007-01", "CYP": "2008-01", "MLT": "2008-01",
+    "SVK": "2009-01", "EST": "2011-01", "LVA": "2014-01",
+    "LTU": "2015-01", "HRV": "2023-01", "BGR": "2026-01",
+}
 
 
-class DownloadError(Exception):
-    """Safe user-facing error; never includes a request URL or API key."""
+class DataError(Exception):
+    """A data or network issue that can be shown safely to the user."""
 
 
-def request_with_retry(url, params=None):
-    """Two attempts for transient failures; separate connect/read timeouts."""
-    for attempt in range(2):
-        try:
-            response = requests.get(
-                url, params=params, timeout=(10, 60),
-                headers={"User-Agent": "GBP-RER-Teaching-App/1.1"},
-            )
-            if response.status_code in (429, 500, 502, 503, 504) and attempt == 0:
-                response.close()
-                time.sleep(1)
-                continue
-            if not response.ok:
-                status = response.status_code
-                response.close()
-                raise DownloadError(f"Source returned HTTP {status}.")
-            return response
-        except (requests.Timeout, requests.ConnectionError) as exc:
-            if attempt == 0:
-                time.sleep(1)
-                continue
-            kind = "Timed out" if isinstance(exc, requests.Timeout) else "Connection failed"
-            raise DownloadError(f"{kind} after two attempts. Use a CSV upload or try again later.") from None
-        except requests.RequestException:
-            raise DownloadError("Download failed. Use a CSV upload or try again later.") from None
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def _download_success(url, series_id=None):
-    """Only successful results are returned and cached; failures raise."""
-    params = {"id": series_id, "cosd": "1999-01-01"} if series_id else None
-    response = request_with_retry(url, params)
+def get_api_key():
+    # Most installations work without a key. A deployment may optionally
+    # provide an IMF subscription key in Secrets; it is never sent to GitHub.
     try:
-        text = response.content.decode("utf-8-sig")
-        if not text.strip():
-            raise DownloadError("Source returned an empty response.")
-        if series_id:
-            parse_csv(text, series_id)  # Reject HTML/block pages before caching.
-        return text, utc_now()
-    finally:
-        response.close()
-
-
-def download(url, series_id=None):
-    """Keep the existing interface, but catch errors OUTSIDE the cache."""
-    try:
-        text, retrieved = _download_success(url, series_id)
-        return text, retrieved, None
-    except (DownloadError, UnicodeError, ValueError, OverflowError) as exc:
-        return None, utc_now(), str(exc)
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def _download_fred_api(series_id, api_key):
-    response = request_with_retry(FRED_API, {
-        "series_id": series_id, "api_key": api_key, "file_type": "json",
-        "observation_start": "1999-01-01", "limit": 100000,
-    })
-    try:
-        try:
-            payload = response.json()
-        except ValueError:
-            raise DownloadError("FRED API returned invalid JSON.") from None
-        if not isinstance(payload, dict):
-            raise DownloadError("FRED API returned an unexpected response.")
-        observations = payload.get("observations")
-        if not isinstance(observations, list) or not observations:
-            raise DownloadError("FRED API returned no observations.")
-        if int(payload.get("count", len(observations))) != len(observations):
-            raise DownloadError("FRED API returned an incomplete history.")
-        buffer = io.StringIO()
-        writer = csv.writer(buffer)
-        writer.writerow(["observation_date", series_id])
-        for obs in observations:
-            if not isinstance(obs, dict) or "date" not in obs or "value" not in obs:
-                raise DownloadError("FRED API returned invalid observations.")
-            writer.writerow([obs["date"], obs["value"]])
-        text = buffer.getvalue()
-        parse_csv(text, series_id)
-        return text, utc_now()
-    finally:
-        response.close()
-
-
-def download_fred(series_id, api_key=""):
-    if not api_key:
-        return download(FRED, series_id)
-    try:
-        text, retrieved = _download_fred_api(series_id, api_key)
-        return text, retrieved, None
-    except (DownloadError, ValueError, OverflowError, UnicodeError) as exc:
-        # Do not retry the same source through another host on each rerun.
-        # Original FRED CSV uploads remain available in the sidebar.
-        return None, utc_now(), str(exc)
-
-
-def get_fred_api_key():
-    key = os.environ.get("FRED_API_KEY", "").strip()
-    if key:
-        return key
-    try:
-        return str(st.secrets.get("FRED_API_KEY", "")).strip()
+        return str(st.secrets.get("IMF_API_KEY", ""))
     except (FileNotFoundError, st.errors.StreamlitSecretNotFoundError):
         return ""
 
 
-def monthly_series(rows):
-    """Strict dates/numbers. Only explicit annual and quarterly rows are skipped."""
-    parsed = []
-    for date_text, value_text in rows:
-        date_text = str(date_text).strip().upper()
-        if re.fullmatch(r"\d{4}(?: Q[1-4])?", date_text):
-            continue
-        if re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", date_text):
-            date = datetime.fromisoformat(date_text + "-01" if len(date_text) == 7 else date_text)
-        elif re.fullmatch(r"\d{4} [A-Z]{3}", date_text):
-            year, month = date_text.split()
-            if month not in MONTHS:
-                raise ValueError(f"Invalid month: {date_text}")
-            date = datetime(int(year), MONTHS[month], 1)
-        else:
-            raise ValueError(f"Invalid date: {date_text!r}. Use YYYY-MM-DD, YYYY-MM or YYYY MON.")
-        text = str(value_text).strip()
-        value = float("nan") if text in ("", ".") else float(text)
-        if not math.isnan(value) and not math.isfinite(value):
-            raise ValueError(f"Nonfinite numeric value at {date_text}")
-        if text.lower() in ("nan", "+nan", "-nan"):
-            raise ValueError(f"Use a blank or '.' for missing values at {date_text}")
-        parsed.append((pd.Timestamp(date).to_period("M").to_timestamp(), value))
-    if not parsed:
-        raise ValueError("No monthly observations found.")
-    frame = pd.DataFrame(parsed, columns=["month", "value"])
-    if frame["month"].duplicated().any():
-        raise ValueError("Duplicate months found; upload monthly data, not daily data.")
-    series = frame.set_index("month")["value"].sort_index()
-    if series.dropna().empty:
-        raise ValueError("No numeric monthly observations found.")
-    return series
-
-
-def parse_csv(text, series_id=None):
-    rows = [r for r in csv.reader(io.StringIO(text.lstrip("\ufeff")))
-            if r and any(cell.strip() for cell in r)]
-    if not rows:
-        raise ValueError("Empty CSV.")
-    header = [cell.strip().lower() for cell in rows[0]]
-    if series_id:
-        date_col = next((i for i, name in enumerate(header) if name in ("date", "observation_date")), None)
-        if date_col is None or series_id.lower() not in header:
-            raise ValueError(f"Expected DATE/observation_date and {series_id} columns from FRED.")
-        value_col = header.index(series_id.lower())
-        data = rows[1:]
-    elif header[0] == "title":
-        metadata = {r[0].strip().upper(): " ".join(r[1:]).strip().upper() for r in rows if r}
-        if metadata.get("CDID") != "D7BT" or "CPI INDEX 00: ALL ITEMS 2015=100" not in metadata.get("TITLE", ""):
-            raise ValueError("This is not the ONS D7BT all-items CPI (2015=100) CSV.")
-        date_col, value_col = 0, 1
-        data = [r for r in rows if r and re.match(r"^\d{4}", r[0].strip())]
-    else:
-        if "date" not in header or "cpi" not in header:
-            raise ValueError("Supplementary CSV needs date,cpi columns, or the original ONS D7BT CSV.")
-        date_col, value_col = header.index("date"), header.index("cpi")
-        data = rows[1:]
-    pairs = []
-    for row in data:
-        if not row or all(not cell.strip() for cell in row):
-            continue
-        if len(row) <= max(date_col, value_col):
-            raise ValueError("CSV row has missing columns.")
-        pairs.append((row[date_col], row[value_col]))
-    return monthly_series(pairs)
-
-
-class Tables(HTMLParser):
-    """Read HTML table cells using only the standard library."""
-    def __init__(self, text):
-        super().__init__()
-        self.tables, self.table, self.row, self.cell = [], None, None, None
-        self.feed(text)
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "table":
-            self.table = []
-        elif tag == "tr" and self.table is not None:
-            self.row = []
-        elif tag in ("td", "th") and self.row is not None:
-            self.cell = []
-
-    def handle_data(self, text):
-        if self.cell is not None:
-            self.cell.append(text)
-
-    def handle_endtag(self, tag):
-        if tag in ("td", "th") and self.cell is not None:
-            self.row.append(" ".join("".join(self.cell).split()))
-            self.cell = None
-        elif tag == "tr" and self.row is not None:
-            self.table.append(self.row)
-            self.row = None
-        elif tag == "table" and self.table is not None:
-            self.tables.append(self.table)
-            self.table = None
-
-
-def load_supplement(current_month):
-    """Use official ONS D7BT directly; no Trading Economics HTML scraping."""
-    notes = []
-    text, retrieved, error = download(ONS_CSV)
-    if text:
+def request_json(url, api_key=""):
+    """Bounded retries for transient errors; never silently replace data."""
+    headers = {"Accept": "application/vnd.sdmx.data+json;version=2.0.0"}
+    if api_key:
+        headers["Ocp-Apim-Subscription-Key"] = api_key
+    for attempt in range(3):
         try:
-            return parse_csv(text), {"source": "ONS D7BT: all-items CPI, 2015=100, NSA",
-                                    "url": ONS, "retrieved": retrieved}, notes
-        except (ValueError, OverflowError) as exc:
-            error = str(exc)
-    notes.append("ONS CSV: " + str(error))
-    text, retrieved, error = download(ONS)
-    if text and "CPI INDEX 00: ALL ITEMS 2015=100" in text.upper() and "D7BT" in text.upper():
-        for table in Tables(text).tables:
-            if table and [s.lower() for s in table[0]] == ["period", "value"]:
-                try:
-                    return monthly_series(table[1:]), {"source": "ONS D7BT: all-items CPI, 2015=100, NSA",
-                                                       "url": ONS, "retrieved": retrieved}, notes
-                except (ValueError, OverflowError) as exc:
-                    error = str(exc)
-    notes.append("ONS monthly table: " + (error or "verified monthly table unavailable."))
-    return None, None, notes
+            response = requests.get(
+                url, headers=headers,
+                params={"startPeriod": START_MONTH}, timeout=(10, 40),
+            )
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            if attempt == 2:
+                raise DataError(
+                    "The IMF download timed out or the connection failed after "
+                    "three attempts. Try Refresh data, or use a saved export below."
+                ) from exc
+            time.sleep(2 ** attempt)
+            continue
+        except requests.RequestException as exc:
+            raise DataError(f"Network request to IMF failed ({type(exc).__name__}).") from exc
+        if response.status_code in (429, 500, 502, 503, 504):
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
+            raise DataError(f"IMF temporarily unavailable (HTTP {response.status_code}).")
+        if response.status_code in (401, 403, 404):
+            raise DataError(
+                f"IMF returned HTTP {response.status_code}. The series may be "
+                "unavailable, or this network may require API access credentials. "
+                "An optional IMF subscription key can be stored as IMF_API_KEY "
+                "in Streamlit Secrets."
+            )
+        if not response.ok:
+            raise DataError(f"IMF download failed (HTTP {response.status_code}).")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise DataError("IMF returned an invalid or non-JSON response.") from exc
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
+            raise DataError("IMF returned an unexpected response structure.")
+        return payload
+    raise DataError("IMF download failed.")
 
 
-def calculate(fred, supplement, current_month):
-    """Splice, clean, and normalize the full sample BEFORE any chart filtering."""
-    grid = pd.date_range("1999-01-01", current_month - pd.offsets.MonthBegin(1), freq="MS")
-    if grid.empty:
-        raise ValueError("There are no completed months since January 1999.")
-    audit = pd.DataFrame(index=grid)
-    for key, series in fred.items():
-        audit[key + "_FRED"] = series.reindex(grid)
-    audit["UK_supplement"] = supplement.reindex(grid) if supplement is not None else float("nan")
-    audit["UK"] = audit["UK_FRED"]
-    audit["UK_source"] = "missing"
-    audit.loc[audit["UK"].notna(), "UK_source"] = "FRED GBRCPIALLMINMEI"
-    splice = {"month": None, "factor": None, "error": None, "count": 0}
-    if supplement is not None:
-        overlap = audit.loc[(audit["UK_FRED"] > 0) & (audit["UK_supplement"] > 0)]
-        if overlap.empty:
-            splice["error"] = "No positive overlapping month: supplementary CPI was not used."
-        else:
-            m = overlap.index.max()
-            factor = overlap.at[m, "UK_FRED"] / overlap.at[m, "UK_supplement"]
-            # A definition check uses the fixed source IDs and upload confirmation.
-            # This additional numerical check detects inconsistent histories.
-            ratios = overlap.tail(12)["UK_FRED"] / overlap.tail(12)["UK_supplement"]
-            if ((ratios / factor - 1).abs() > 0.01).any():
-                splice["error"] = "Overlapping CPI levels differ by more than 1% after linking; extension rejected."
-            else:
-                use = (audit.index > m) & audit["UK_FRED"].isna() & (audit["UK_supplement"] > 0)
-                audit.loc[use, "UK"] = factor * audit.loc[use, "UK_supplement"]
-                audit.loc[use, "UK_source"] = "supplement linked to FRED"
-                splice.update(month=m, factor=factor, count=int(use.sum()))
-    audit["US"] = audit["US_FRED"]
-    audit["US_estimated"] = False
-    oct_2025 = pd.Timestamp("2025-10-01")
-    neighbors = audit["US_FRED"].reindex(pd.to_datetime(["2025-09-01", "2025-11-01"]))
-    if oct_2025 in audit.index and pd.isna(audit.at[oct_2025, "US_FRED"]) and (neighbors > 0).all():
-        audit.at[oct_2025, "US"] = neighbors.mean()
-        audit.at[oct_2025, "US_estimated"] = True
-    audit["included"] = (audit[["S_FRED", "US", "UK"]] > 0).all(axis=1)
-    valid = audit.loc[audit["included"]].copy()
-    if valid.empty:
-        raise ValueError("No positive common observations in completed months since January 1999.")
-    raw = valid["S_FRED"] * valid["UK"] / valid["US"]
-    if not raw.map(math.isfinite).all():
-        raise ValueError("RER overflow: check the input levels.")
-    rer_mean, s_mean = float(raw.mean()), float(valid["S_FRED"].mean())
-    audit["RER_raw"] = raw
-    audit["RER_mean"] = rer_mean
-    audit["S_mean"] = s_mean
-    audit["RER_index"] = 100 * audit["RER_raw"] / rer_mean
-    audit["nominal_index"] = (100 * valid["S_FRED"] / s_mean).reindex(grid)
-    for name in ("RER_index", "nominal_index"):
-        if not math.isclose(audit.loc[audit["included"], name].mean(), 100, abs_tol=1e-9):
-            raise ValueError("Normalization check failed.")
-    return audit, splice
+def month_timestamp(text):
+    """SDMX monthly periods can be YYYY-Mmm or YYYY-mm."""
+    match = re.fullmatch(r"(\d{4})-M?(0[1-9]|1[0-2])(?:-01)?", str(text))
+    if not match:
+        raise DataError(f"Unexpected monthly date in the IMF response: {text!s}")
+    return pd.Timestamp(int(match.group(1)), int(match.group(2)), 1)
 
 
-def chart(frame):
-    """Synthetic crossing points are used only in line traces, never in the data."""
-    paths = {"red": ([], []), "blue": ([], [])}
-    points = list(frame["RER_index"].items())
-    for (x0, y0), (x1, y1) in zip(points, points[1:]):
-        if pd.isna(y0) or pd.isna(y1):
-            continue  # Do not draw through missing months.
-        segments = [(x0, y0, x1, y1)]
-        if (y0 - 100) * (y1 - 100) < 0:
-            crossing = x0 + (x1 - x0) * ((100 - y0) / (y1 - y0))
-            segments = [(x0, y0, crossing, 100), (crossing, 100, x1, y1)]
-        for a, b, c, d in segments:
-            color = "red" if (b + d) / 2 > 100 else "blue"
-            paths[color][0].extend([a, c, None])
-            paths[color][1].extend([b, d, None])
+def resolve_attribute(definition, value):
+    if value is None:
+        return None
+    values = definition.get("values", [])
+    if isinstance(value, int) and values:
+        if value < 0 or value >= len(values):
+            raise DataError("Invalid attribute index in IMF data.")
+        entry = values[value]
+        return entry.get("id", entry.get("value"))
+    return value
+
+
+def parse_series(payload, expected):
+    """Validate one exact SDMX series and decode its time dimension.
+
+    Use keyPosition rather than assuming array order. Missing months remain
+    missing, and observation statuses are retained for the exported data.
+    """
+    data = payload["data"]
+    datasets, structures = data.get("dataSets", []), data.get("structures", [])
+    if len(datasets) != 1 or not structures:
+        raise DataError("IMF returned no data or more than one dataset.")
+    dataset = datasets[0]
+    try:
+        structure = structures[dataset.get("structure", 0)]
+    except (IndexError, TypeError) as exc:
+        raise DataError("Invalid IMF structure reference.") from exc
+    series = dataset.get("series", {})
+    if len(series) == 0:
+        raise DataError("No monthly observations are available for this IMF series.")
+    if len(series) != 1:
+        raise DataError("IMF returned multiple series; refusing to combine them.")
+    key, record = next(iter(series.items()))
+    dimensions = sorted(structure["dimensions"]["series"], key=lambda d: d["keyPosition"])
+    try:
+        indexes = [int(part) for part in key.split(":")]
+        if len(indexes) != len(dimensions):
+            raise DataError("Invalid IMF series key.")
+        selected = {
+            d["id"]: d["values"][i]["id"] for d, i in zip(dimensions, indexes)
+        }
+    except (ValueError, IndexError, KeyError) as exc:
+        raise DataError("Cannot decode IMF series dimensions.") from exc
+    if selected != expected:
+        raise DataError("The downloaded series does not match the requested country and indicator.")
+    observation_dimensions = structure["dimensions"]["observation"]
+    if len(observation_dimensions) != 1 or observation_dimensions[0]["id"] != "TIME_PERIOD":
+        raise DataError("Unsupported IMF observation dimensions.")
+    times = observation_dimensions[0]["values"]
+    attributes = structure.get("attributes", {})
+    series_attributes = {
+        d["id"]: resolve_attribute(d, value)
+        for d, value in zip(attributes.get("series", []), record.get("attributes", []))
+    }
+    try:
+        scale = float(series_attributes.get("SCALE") or 0)
+    except (TypeError, ValueError) as exc:
+        raise DataError("Unsupported IMF value scale.") from exc
+    rows = []
+    for index, obs in record.get("observations", {}).items():
+        try:
+            entry = times[int(index)]
+            date = month_timestamp(entry.get("id", entry.get("value")))
+            value = float(obs[0]) * 10 ** scale if obs[0] is not None else float("nan")
+        except (IndexError, ValueError, TypeError, OverflowError) as exc:
+            raise DataError("Cannot decode an IMF observation.") from exc
+        if not math.isfinite(value) or value <= 0:
+            continue
+        attrs = {
+            d["id"]: resolve_attribute(d, v)
+            for d, v in zip(attributes.get("observation", []), obs[1:])
+        }
+        rows.append({"month": date, "value": value, "status": attrs.get("STATUS") or ""})
+    if not rows:
+        raise DataError("The IMF series contains no positive monthly values.")
+    frame = pd.DataFrame(rows).set_index("month").sort_index()
+    if frame.index.has_duplicates:
+        raise DataError("Duplicate months in the IMF response.")
+    now_month = pd.Timestamp(datetime.now(timezone.utc).date()).to_period("M").to_timestamp()
+    frame = frame.loc[(frame.index >= pd.Timestamp(START_MONTH)) & (frame.index < now_month)]
+    return frame, series_attributes
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_series(flow, country, api_key=""):
+    if flow == "CPI":
+        expected = {"COUNTRY": country, "INDEX_TYPE": "CPI", "COICOP_1999": "_T",
+                    "TYPE_OF_TRANSFORMATION": "IX", "FREQUENCY": "M"}
+        key = f"{country}.CPI._T.IX.M"
+    else:
+        expected = {"COUNTRY": country, "INDICATOR": "XDC_USD",
+                    "TYPE_OF_TRANSFORMATION": "PA_RT", "FREQUENCY": "M"}
+        key = f"{country}.XDC_USD.PA_RT.M"
+    url = f"{API_BASE}/data/dataflow/IMF.STA/{flow}/+/{key}"
+    frame, attributes = parse_series(request_json(url, api_key), expected)
+    return {"frame": frame, "attributes": attributes, "url": url,
+            "downloaded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+
+
+def fx_country(country):
+    return "G163" if country in EURO_ADOPTION else country
+
+
+def estimate_us_october(frame):
+    result = frame.copy()
+    result["estimated"] = False
+    oct_month, sep, nov = map(pd.Timestamp, ["2025-10-01", "2025-09-01", "2025-11-01"])
+    observed = oct_month in result.index and pd.notna(result.loc[oct_month, "value"])
+    if not observed and sep in result.index and nov in result.index:
+        neighbors = result.loc[[sep, nov], "value"]
+        if neighbors.notna().all() and (neighbors > 0).all():
+            result.loc[oct_month, ["value", "status", "estimated"]] = [
+                float(neighbors.mean()), "estimated by app", True]
+    return result.sort_index()
+
+
+def prepare_inputs(numerator, denominator, results, estimate_october=True):
+    """Get common months without filling gaps or mixing old/new currencies."""
+    cpis = {}
+    for country in (numerator, denominator):
+        frame = results[("CPI", country)]["frame"].copy()
+        frame["estimated"] = False
+        if country == "USA" and estimate_october:
+            frame = estimate_us_october(frame)
+        cpis[country] = frame
+    parts = []
+    for role, country in [("numerator", numerator), ("denominator", denominator)]:
+        parts.append(cpis[country].rename(columns={
+            "value": f"cpi_{role}", "status": f"cpi_{role}_status",
+            "estimated": f"cpi_{role}_estimated"}))
+        if country != "USA":
+            parts.append(results[("ER", fx_country(country))]["frame"].rename(columns={
+                "value": f"fx_{role}_per_usd", "status": f"fx_{role}_status"}))
+    frame = pd.concat(parts, axis=1)
+    for role, country in [("numerator", numerator), ("denominator", denominator)]:
+        if country == "USA":
+            frame[f"fx_{role}_per_usd"] = 1.0  # Definition of USD/USD, not estimated data.
+            frame[f"fx_{role}_status"] = "currency identity"
+    start = max([START_MONTH] + [EURO_ADOPTION[c] for c in (numerator, denominator) if c in EURO_ADOPTION])
+    frame = frame.loc[frame.index >= pd.Timestamp(start)].sort_index()
+    required = ["cpi_numerator", "cpi_denominator", "fx_numerator_per_usd", "fx_denominator_per_usd"]
+    keep = frame[required].notna().all(axis=1) & (frame[required] > 0).all(axis=1)
+    frame = frame.loc[keep].copy()
+    if frame.empty:
+        raise DataError("These countries have no common valid monthly sample from January 1999 onward.")
+    # Both q rates are local-currency units per USD. Their ratio is
+    # denominator-currency units per numerator-currency unit.
+    frame["S_denominator_per_numerator"] = frame["fx_denominator_per_usd"] / frame["fx_numerator_per_usd"]
+    frame["RER"] = frame["S_denominator_per_numerator"] * frame["cpi_numerator"] / frame["cpi_denominator"]
+    return frame
+
+
+def calculate_indexes(frame, base_month):
+    """Always rebase the full common sample before applying chart dates."""
+    base = pd.Timestamp(base_month)
+    if base not in frame.index:
+        raise DataError("Choose a base month with all required observations.")
+    result = frame.copy()
+    result["real_index"] = 100 * (result["RER"] / result.loc[base, "RER"])
+    result["nominal_index"] = 100 * (result["S_denominator_per_numerator"] / result.loc[base, "S_denominator_per_numerator"])
+    return result
+
+
+def make_figure(frame, start, end, numerator_name, denominator_name, base_month):
+    # Reindex only the display frame so Plotly leaves gaps at missing months.
+    display = frame.loc[pd.Timestamp(start):pd.Timestamp(end)].reindex(
+        pd.date_range(start, end, freq="MS"))
     fig = go.Figure()
-    for color, (xs, ys) in paths.items():
-        fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", hoverinfo="skip",
-                                name="RER above average" if color == "red" else "RER below average",
-                                line=dict(color=color, width=3), connectgaps=False))
-    observed = frame.dropna(subset=["RER_index"])
-    fig.add_trace(go.Scatter(x=observed.index, y=observed["RER_index"], mode="markers",
-                            showlegend=False, name="RER", marker=dict(size=4, color=[
-                                "red" if y > 100 else "blue" for y in observed["RER_index"]]),
-                            hovertemplate="%{x|%b %Y}<br>RER: %{y:.2f}<extra></extra>"))
-    fig.add_trace(go.Scatter(x=frame.index, y=frame["nominal_index"], mode="lines+markers",
-                            name="Nominal exchange rate", line=dict(color="gray", dash="dash", width=2),
-                            marker=dict(size=3), connectgaps=False,
-                            hovertemplate="%{x|%b %Y}<br>Nominal: %{y:.2f}<extra></extra>"))
-    fig.add_hline(y=100, line_color="#777777", line_width=1,
-                  annotation_text="Sample average", annotation_position="top left")
-    fig.update_layout(template="plotly_white", paper_bgcolor="white", plot_bgcolor="white",
-                      font=dict(color="#222222"), height=500, hovermode="closest",
-                      xaxis_title="Month", yaxis_title="Index (full-sample average = 100)",
-                      legend=dict(orientation="h", y=1.12), margin=dict(t=70))
+    for column, label, color in [("real_index", "Real exchange rate", "#b32232"),
+                                 ("nominal_index", "Nominal exchange rate", "#175e9d")]:
+        fig.add_trace(go.Scatter(x=display.index, y=display[column], name=label,
+                                mode="lines", line={"color": color, "width": 2.5},
+                                connectgaps=False, hovertemplate="%{x|%b %Y}: %{y:.2f}<extra>%{fullData.name}</extra>"))
+    fig.add_hline(y=100, line_color="#888888", line_dash="dash")
+    fig.update_layout(template="plotly_white", height=510,
+                      title={"text": f"{numerator_name} relative to {denominator_name}", "font": {"color": "#b32232", "size": 22}},
+                      yaxis_title=f"Index ({pd.Timestamp(base_month):%b %Y} = 100)",
+                      xaxis_title=None, hovermode="x unified", legend={"orientation": "h", "y": 1.12},
+                      margin={"l": 55, "r": 20, "t": 105, "b": 50})
     return fig
 
 
-def main():
-    st.set_page_config(page_title="Real exchange rate of the British pound", layout="wide")
-    st.title("Real exchange rate of the British pound")
-    st.latex(r"\mathrm{RER}_t=S_t\frac{P_t^{UK}}{P_t^{US}},\qquad I_t^{RER}=100\frac{\mathrm{RER}_t}{\overline{\mathrm{RER}}},\qquad I_t^S=100\frac{S_t}{\overline S}")
-    st.caption("S is U.S. dollars per British pound, measured as a monthly average.")
-    current = pd.Timestamp(datetime.now(ZoneInfo("America/Chicago")).date()).to_period("M").to_timestamp()
-    if st.sidebar.button("Refresh data"):
-        _download_success.clear()
-        _download_fred_api.clear()
-    with st.sidebar.expander("CSV uploads / connection settings"):
-        st.write("Use original FRED CSVs, one per series. Uploads take priority and skip online requests for those inputs.")
-        uploads = {key: st.file_uploader("FRED " + sid, type="csv", key=sid) for key, sid in IDS.items()}
-        source = st.selectbox("Supplementary UK CPI source", ["ONS D7BT", "Trading Economics"])
-        upload = st.file_uploader("Supplementary UK CPI CSV", type="csv", key="supplement")
-        confirmed = st.checkbox("I verified these are actual monthly UK all-items CPI levels, 2015=100, NSA.")
-        st.caption("Supplementary CSV: date,cpi; or the original ONS D7BT download. Include an overlap with FRED.")
-
-    api_key = get_fred_api_key()
-    st.sidebar.caption("FRED API enabled." if api_key else
-                       "FRED CSV downloads enabled. Optional: set FRED_API_KEY in app secrets to use the API.")
-    fred, metadata, notices = {}, {}, []
-    with st.spinner("Loading monthly source data..."):
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            pending = {key: pool.submit(download_fred, sid, api_key)
-                       for key, sid in IDS.items() if uploads[key] is None}
-            results = {key: future.result() for key, future in pending.items()}
-        for key, sid in IDS.items():
-            try:
-                if uploads[key] is not None:
-                    text = uploads[key].getvalue().decode("utf-8-sig")
-                    retrieved = utc_now()
-                    label = "FRED CSV upload: " + sid
-                else:
-                    text, retrieved, error = results[key]
-                    if error:
-                        raise ValueError(error)
-                    label = "FRED " + sid + (" (API)" if api_key else " (CSV)")
-                series = parse_csv(text, sid)
-                meta = {"source": label, "url": f"https://fred.stlouisfed.org/series/{sid}", "retrieved": retrieved}
-                st.session_state["verified_" + sid] = (series, meta)
-            except (ValueError, OverflowError, TypeError, UnicodeError) as exc:
-                notices.append(f"{sid} download unavailable: {exc}")
-                saved = st.session_state.get("verified_" + sid)
-                if uploads[key] is not None:
-                    try:
-                        series = parse_csv(uploads[key].getvalue().decode("utf-8-sig"), sid)
-                        meta = {"source": "FRED CSV upload: " + sid, "url": f"https://fred.stlouisfed.org/series/{sid}", "retrieved": utc_now()}
-                        st.session_state["verified_" + sid] = (series, meta)
-                    except (ValueError, UnicodeError, OverflowError) as upload_error:
-                        notices.append(f"{sid} upload rejected: {upload_error}")
-                        if saved is None:
-                            continue
-                        series, meta = saved
-                elif saved is not None:
-                    series, meta = saved
-                    notices.append(f"Using the last verified {sid} data from this session.")
-                else:
-                    continue
-            fred[key], metadata[key] = series, meta
-        supplement, supplement_meta = None, None
-        if upload is None:
-            supplement, supplement_meta, supplement_notes = load_supplement(current)
-            notices.extend(supplement_notes)
-        else:
-            try:
-                if not confirmed:
-                    raise ValueError("Confirm the supplementary CPI definition before using this upload.")
-                supplement = parse_csv(upload.getvalue().decode("utf-8-sig"))
-                supplement_meta = {"source": source + " CSV upload: user-confirmed actual all-items CPI, 2015=100, NSA",
-                                   "url": ONS if source == "ONS D7BT" else TE, "retrieved": utc_now()}
-            except (ValueError, UnicodeError, OverflowError) as exc:
-                supplement = None
-                notices.append(f"Supplementary upload rejected: {exc}")
-    with st.expander("Source availability and validation messages"):
-        for notice in notices:
-            st.write(notice)
-    if len(fred) != 3:
-        st.error("All three FRED series are needed. Upload the missing original CSVs in the sidebar, then retry.")
-        st.stop()
-    try:
-        audit, splice = calculate(fred, supplement, current)
-    except (ValueError, OverflowError) as exc:
-        st.error(str(exc))
-        st.stop()
-    if splice["error"]:
-        st.warning(splice["error"])
-    valid = audit.loc[audit["included"]]
-    first, last = valid.index.min(), valid.index.max()
-    st.write(f"**Benchmark:** {first:%b %Y}–{last:%b %Y}, {len(valid)} valid common months. "
-             f"**Latest common month:** {last:%b %Y}. Both full-sample indexes average 100.")
-    if supplement is None or splice["error"]:
-        st.info(f"No usable UK CPI extension. The verified FRED sample ends in {last:%b %Y}; no observations were invented.")
-    if splice["month"] is not None:
-        st.write(f"**UK CPI link:** {splice['month']:%b %Y}; factor = {splice['factor']:.10g}; "
-                 f"{splice['count']} later monthly UK CPI values added. Source: {supplement_meta['source']}.")
-        st.latex(r"P_t^{UK}=P_m^{UK,\mathrm{FRED}}\left(P_t^{UK,\mathrm{new}}/P_m^{UK,\mathrm{new}}\right),\quad t>m")
-    st.caption("UK definitions: FRED GBRCPIALLMINMEI is OECD total/all-items CPI, 2015=100, NSA; "
-               "ONS D7BT is CPI INDEX 00: ALL ITEMS 2015=100. Automatic UK CPI extension uses ONS directly; Trading Economics CSV uploads require confirmation of this definition.")
-    if audit["US_estimated"].any():
-        st.warning("October 2025 U.S. CPI is estimated as the average of observed September and November 2025 levels.")
-    source_rows = [{"input": key, **meta} for key, meta in metadata.items()]
-    if supplement_meta:
-        source_rows.append({"input": "UK supplement", **supplement_meta})
-    st.dataframe(pd.DataFrame(source_rows), hide_index=True)
-
-    # Date selection affects only the chart, never the benchmark or exports.
-    start = st.sidebar.date_input("Chart starts", first.date(), min_value=first.date(), max_value=last.date())
-    end = st.sidebar.date_input("Chart ends", last.date(), min_value=first.date(), max_value=last.date())
-    if start > end:
-        st.error("Chart start must be on or before chart end.")
+def render_graph(frame, numerator, denominator, source_label):
+    numerator_name, denominator_name = COUNTRY_NAMES[numerator], COUNTRY_NAMES[denominator]
+    st.subheader(f"{numerator_name} / {denominator_name}")
+    st.latex(r"\mathrm{RER}_t=S_t\frac{P_t^{\mathrm{numerator}}}{P_t^{\mathrm{denominator}}}")
+    st.write(f"S is {denominator_name}'s currency units per unit of {numerator_name}'s currency. "
+             f"A rise means **real appreciation of {numerator_name} relative to {denominator_name}**.")
+    for country in (numerator, denominator):
+        if country in EURO_ADOPTION:
+            st.caption(f"{COUNTRY_NAMES[country]}: euro exchange rate from {EURO_ADOPTION[country]}; "
+                       "months before euro adoption are excluded.")
+    months = [date.strftime("%Y-%m") for date in frame.index]
+    pair = f"{numerator}_{denominator}_{source_label}"
+    base_month = st.selectbox("Base month (index = 100)", months, index=0, key=f"base_{pair}")
+    indexed = calculate_indexes(frame, base_month)
+    if len(months) > 1:
+        start, end = st.select_slider("Months shown on the graph", months,
+                                      value=(months[0], months[-1]), key=f"range_{pair}")
     else:
-        display = audit.loc[pd.Timestamp(start):pd.Timestamp(end)]
-        if display["included"].any():
-            st.plotly_chart(chart(display), width="stretch", theme=None)
+        start = end = months[0]
+    st.plotly_chart(make_figure(indexed, start, end, numerator_name, denominator_name, base_month),
+                    width="stretch")
+    estimated = indexed["cpi_numerator_estimated"].any() or indexed["cpi_denominator_estimated"].any()
+    if estimated:
+        st.info("October 2025 U.S. CPI is estimated as the average of September and November. "
+                "The estimate is flagged in the table and CSV.")
+    grid = pd.date_range(indexed.index.min(), indexed.index.max(), freq="MS")
+    st.caption(f"Common sample: {months[0]} to {months[-1]} · {len(indexed):,} valid months · "
+               f"{len(grid) - len(indexed):,} missing common months · {source_label}.")
+    st.caption("An index above 100 means appreciation since the base month; it does not establish overvaluation. "
+               "Countries' CPI baskets differ. Data are current revised observations, subject to IMF revisions.")
+    with st.expander("Calculation and source details"):
+        st.write("The IMF CPI series is the monthly national all-items index (CPI._T.IX.M). "
+                 "Exchange rates are monthly period averages in local currency per U.S. dollar (XDC_USD.PA_RT.M). "
+                 "S = (denominator currency per dollar) / (numerator currency per dollar). "
+                 "For USD, the rate is exactly 1 by definition. CPI reference years may differ: rebasing "
+                 "the final index removes their constant scale factors. The ratio of two monthly-average "
+                 "USD rates is an approximation to the monthly average of the daily bilateral rate. "
+                 "Other currency redenominations or methodological breaks may require extra treatment.")
+        st.markdown("[IMF CPI](https://data.imf.org/en/datasets/IMF.STA:CPI) · "
+                    "[IMF exchange rates](https://data.imf.org/Datasets/ER)")
+    exported = indexed.reset_index(names="month")
+    exported["month"] = exported["month"].dt.strftime("%Y-%m")
+    exported["numerator_country"] = numerator
+    exported["denominator_country"] = denominator
+    exported["base_month"] = base_month
+    st.download_button("Download data (CSV)", exported.to_csv(index=False).encode("utf-8"),
+                       file_name=f"rer_{numerator}_{denominator}.csv", mime="text/csv", key=f"export_{pair}")
+    with st.expander("Data table"):
+        st.dataframe(exported, width="stretch", hide_index=True)
+
+
+def read_saved_export(file):
+    """Only accept the app's own fully identified export for offline plotting."""
+    frame = pd.read_csv(file, keep_default_na=False)
+    required = {"month", "numerator_country", "denominator_country", "cpi_numerator",
+                "cpi_denominator", "fx_numerator_per_usd", "fx_denominator_per_usd",
+                "cpi_numerator_estimated", "cpi_denominator_estimated", "RER", "S_denominator_per_numerator"}
+    if frame.empty or not required.issubset(frame.columns):
+        raise DataError("Upload a CSV previously exported by this app.")
+    countries = []
+    for column in ["numerator_country", "denominator_country"]:
+        values = frame[column].unique()
+        if len(values) != 1 or values[0] not in COUNTRY_NAMES:
+            raise DataError("Invalid or mixed country identifiers in the saved CSV.")
+        countries.append(values[0])
+    if countries[0] == countries[1]:
+        raise DataError("Choose two different countries.")
+    frame["month"] = frame["month"].map(month_timestamp)
+    frame = frame.set_index("month").sort_index()
+    if frame.index.has_duplicates:
+        raise DataError("Duplicate months in saved CSV.")
+    for col in ["cpi_numerator", "cpi_denominator", "fx_numerator_per_usd", "fx_denominator_per_usd"]:
+        frame[col] = pd.to_numeric(frame[col], errors="coerce")
+        if frame[col].isna().any() or not frame[col].map(math.isfinite).all() or (frame[col] <= 0).any():
+            raise DataError("Invalid input values in saved CSV.")
+    for col in ["cpi_numerator_estimated", "cpi_denominator_estimated"]:
+        labels = frame[col].astype(str).str.lower()
+        if not labels.isin(["true", "false"]).all():
+            raise DataError("Invalid estimate flags in saved CSV.")
+        frame[col] = labels.eq("true")
+    # Recalculate from raw inputs instead of trusting stored indexes.
+    frame["S_denominator_per_numerator"] = frame["fx_denominator_per_usd"] / frame["fx_numerator_per_usd"]
+    frame["RER"] = frame["S_denominator_per_numerator"] * frame["cpi_numerator"] / frame["cpi_denominator"]
+    cutoff = pd.Timestamp(datetime.now(timezone.utc).date()).to_period("M").to_timestamp()
+    start = max([START_MONTH] + [EURO_ADOPTION[c] for c in countries if c in EURO_ADOPTION])
+    frame = frame.loc[(frame.index >= pd.Timestamp(start)) & (frame.index < cutoff)]
+    if frame.empty:
+        raise DataError("The CSV has no valid completed months in this app's sample.")
+    return frame, countries[0], countries[1]
+
+
+def main():
+    st.set_page_config(page_title="Two-country real exchange rate", layout="wide")
+    st.title("Two-country real exchange rate")
+    st.write("Choose the two countries in the CPI ratio. The app downloads monthly IMF data and plots real and nominal exchange rate indexes.")
+    mode = st.radio("Data source", ["Live IMF data", "Saved CSV export"], horizontal=True)
+    if mode == "Saved CSV export":
+        uploaded = st.file_uploader("CSV previously downloaded from this app", type="csv")
+        if uploaded is not None:
+            try:
+                frame, numerator, denominator = read_saved_export(uploaded)
+                st.caption("Source: uploaded saved export; this is not a live update.")
+                render_graph(frame, numerator, denominator, "uploaded saved export")
+            except (DataError, ValueError, KeyError, pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
+                st.error(str(exc))
+        return
+    options = sorted(COUNTRY_NAMES, key=lambda c: COUNTRY_NAMES[c])
+    with st.form("countries"):
+        left, right = st.columns(2)
+        numerator = left.selectbox("Country in the numerator (P numerator)", options,
+                                   index=options.index("GBR"), format_func=lambda c: COUNTRY_NAMES[c])
+        denominator = right.selectbox("Country in the denominator (P denominator)", options,
+                                       index=options.index("USA"), format_func=lambda c: COUNTRY_NAMES[c])
+        estimate_october = st.checkbox("Estimate missing October 2025 U.S. CPI using September and November", value=True)
+        submitted = st.form_submit_button("Fetch data and plot", type="primary")
+    if submitted:
+        st.session_state["active_pair"] = (numerator, denominator, estimate_october)
+    if st.button("Refresh data"):
+        fetch_series.clear()
+    if "active_pair" in st.session_state:
+        numerator, denominator, estimate_october = st.session_state["active_pair"]
+        if numerator == denominator:
+            st.error("Please choose two different countries.")
         else:
-            st.warning("No valid common observations in these chart dates.")
-    st.write("A rising RER indicates real appreciation: the UK CPI basket becomes more expensive "
-             "relative to the U.S. basket in dollar terms. A rising nominal index means more dollars per pound. "
-             "The CPI baskets differ across countries, and CPI indexes measure price changes rather than "
-             "comparable basket price levels. The sample average is a historical reference, not an equilibrium "
-             "exchange rate or a measure of fair value. Changing the chart dates leaves both indexes unchanged; "
-             "new data or revisions can change the full-sample benchmark.")
-    audit["US_source"] = "missing"
-    audit.loc[audit["US_FRED"].notna(), "US_source"] = "FRED CPIAUCNS"
-    audit.loc[audit["US_estimated"], "US_source"] = "estimated: mean of Sep and Nov 2025 FRED CPIAUCNS"
-    audit["FX_source"] = audit["S_FRED"].map(lambda v: "FRED EXUSUK monthly average" if pd.notna(v) else "missing")
-    for key, meta in metadata.items():
-        for field, value in meta.items():
-            audit[key + "_" + field + "_record"] = value
-    for field in ("source", "url", "retrieved"):
-        audit["supplement_" + field] = supplement_meta[field] if supplement_meta else "unavailable"
-    audit["link_month"] = splice["month"]
-    audit["link_factor"] = splice["factor"]
-    audit["benchmark_start"], audit["benchmark_end"] = first, last
-    audit["benchmark_n"] = len(valid)
-    audit["splice_status"] = splice["error"] or ("linked" if splice["month"] is not None else "no supplement")
-    output = audit.rename_axis("month").reset_index()
-    st.caption("Full audit table: only rows with included=True enter the calculation. Other gaps remain blank. "
-               "Original FRED levels, supplementary levels, source records, estimates, means and indexes are exported.")
-    st.dataframe(output, hide_index=True)
-    st.download_button("Download full data and calculations (CSV)", output.to_csv(index=False).encode("utf-8"),
-                       "real_exchange_rate_gbp.csv", "text/csv")
+            api_key = get_api_key()
+            keys = {( "CPI", numerator), ("CPI", denominator)}
+            keys |= {("ER", fx_country(c)) for c in (numerator, denominator) if c != "USA"}
+            results, errors = {}, []
+            with st.spinner("Downloading monthly IMF data…"):
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    futures = {pool.submit(fetch_series, flow, country, api_key): (flow, country)
+                               for flow, country in sorted(keys)}
+                    for future in as_completed(futures):
+                        flow, country = futures[future]
+                        try:
+                            results[(flow, country)] = future.result()
+                        except Exception as exc:
+                            message = str(exc) if isinstance(exc, DataError) else "Unexpected response; try again later."
+                            errors.append(f"{COUNTRY_NAMES.get(country, 'Euro area')} {flow}: {message}")
+            if errors:
+                for error in errors:
+                    st.error(error)
+                st.info("Availability varies by country. Switch Data source to Saved CSV export to reload a previous download.")
+            else:
+                try:
+                    frame = prepare_inputs(numerator, denominator, results, estimate_october)
+                    render_graph(frame, numerator, denominator, "IMF live downloads (cached for one hour)")
+                    with st.expander("Download times and exact series"):
+                        for key in sorted(results):
+                            item = results[key]
+                            st.write(f"{key[0]} / {key[1]} · downloaded {item['downloaded_at']} (UTC)")
+                            st.code(item["url"], language=None)
+                except DataError as exc:
+                    st.error(str(exc))
 
 
 if __name__ == "__main__":
