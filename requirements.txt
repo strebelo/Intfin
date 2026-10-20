@@ -13,3 +13,4 @@ scikit-learn>=1.4
 openpyxl
 pygam
 plotly
+lxml>=5,<7
