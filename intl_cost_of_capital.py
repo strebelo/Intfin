@@ -651,7 +651,7 @@ def main():
                             "Used": f"{'Manual override' if override_local_spread else 'Converted USD spread'}: "
                                     f"{model['spread_local']:.4%}; converted default: {model['spread_local_default']:.4%}"})
     for index, (name, quote, manual, rate) in enumerate([
-            ("U.S. 10-year", us_quote, manual_us, rf_us),
+            ("10-year bond yields", us_quote, manual_us, rf_us),
             (f"{country} 10-year", local_quote, manual_local, rf_local)]):
         if is_us and index == 1:
             break
@@ -659,7 +659,7 @@ def main():
                             "Source date": quote["quote_date"] if quote else "Unavailable",
                             "Retrieved (UTC)": bonds["fetched"],
                             "Used": f"{'Manual override' if manual else quote['route']}: {rate:.4%}"})
-    with st.expander("Sources and data dates"):
+    with st.expander("Sources"):
         st.dataframe(pd.DataFrame(source_rows), hide_index=True, width="stretch",
                      column_config={"Source": st.column_config.LinkColumn("Source")})
         st.caption("Beta, tax and BBB spread downloads are cached for 24 hours; bond quotes for 15 minutes. "
