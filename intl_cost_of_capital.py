@@ -393,7 +393,7 @@ def spread_input(benchmark: dict | None) -> tuple[float | None, bool]:
     manual = st.checkbox("Override BBB borrowing spread", value=benchmark is None,
                          key="spread_override")
     if benchmark:
-        st.caption(f"Damodaran BBB spread: {benchmark['spread']:.2%} "
+        st.caption(f"BBB spread: {benchmark['spread']:.2%} "
                    f"({benchmark['spread'] * 10000:.0f} basis points) · {benchmark['date']}")
     else:
         st.info("BBB spread unavailable. Enter a borrowing spread manually or refresh source data.")
@@ -403,7 +403,7 @@ def spread_input(benchmark: dict | None) -> tuple[float | None, bool]:
                             min_value=0.0, max_value=50.0, value=None, step=0.01, format="%.2f",
                             key="spread", disabled=not manual,
                             placeholder="Enter a borrowing spread",
-                            help="Uses Damodaran's BBB spread unless overridden. 1.00 means 100 basis points. "
+                            help="Uses the BBB spread unless overridden. 1.00 means 100 basis points. "
                                  "The spread is added to the selected country's 10-year yield, "
                                  "and to the U.S. yield for the USD comparison.")
     return value, manual
@@ -587,7 +587,7 @@ def main():
         {"Input": "BBB borrowing spread", "Source": RATINGS_URL,
          "Source date": bbb_spread["date"] if bbb_spread else "Unavailable",
          "Retrieved (UTC)": bbb_spread["fetched"] if bbb_spread else "Unavailable",
-         "Used": f"{'Manual override' if override_spread else 'Damodaran BBB'}: {spread:.4%}"},
+         "Used": f"{'Manual override' if override_spread else 'BBB spread'}: {spread:.4%}"},
     ]
     for index, (name, quote, manual, rate) in enumerate([
             ("U.S. 10-year", us_quote, manual_us, rf_us),
@@ -657,3 +657,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
