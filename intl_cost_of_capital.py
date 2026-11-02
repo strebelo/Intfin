@@ -636,7 +636,7 @@ def main():
     source_rows = [
         {"Input": "U.S. industry betas", "Source": BETA_URL, "Source date": industry_data["date"],
          "Retrieved (UTC)": industry_data["fetched"], "Used": beta_column},
-        {"Input": f"{country} corporate tax", "Source": TAX_URL,
+        {"Input": "Corporate tax rates", "Source": TAX_URL,
          "Source date": taxes["date"] if taxes else "Unavailable",
          "Retrieved (UTC)": taxes["fetched"] if taxes else "Unavailable",
          "Used": f"{'Manual override' if override_tax else 'Source'}: {tax:.4%}"},
