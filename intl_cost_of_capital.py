@@ -334,15 +334,19 @@ def load_bbb_spread():
 
 
 def calculate(beta_u: float, debt_fraction: float, tax: float, erp: float,
-              rf_us: float, rf_local: float, spread: float) -> dict:
+              rf_us: float, rf_local: float, spread: float,
+              local_spread_override: float | None = None) -> dict:
     """Compute USD and selected-currency component costs, then each WACC.
 
     Hamada relevering assumes zero debt beta. The chosen tax jurisdiction and
     capital structure are held fixed across the two currency scenarios.
-    Each borrowing cost is its own currency's 10-year yield plus the same spread.
+    The default local spread converts the USD spread using the gross yield ratio.
+    An explicit local spread replaces that default without changing USD costs.
     The local WACC is a financing scenario with interest deductible locally.
     """
     values = (beta_u, debt_fraction, tax, erp, rf_us, rf_local, spread)
+    if local_spread_override is not None:
+        values += (local_spread_override,)
     if not all(math.isfinite(float(x)) for x in values):
         raise ValueError("All inputs must be finite numbers.")
     if not 0 <= debt_fraction < 1:
@@ -351,16 +355,22 @@ def calculate(beta_u: float, debt_fraction: float, tax: float, erp: float,
         raise ValueError("Tax must be 0–100%; the equity premium and borrowing spread must be nonnegative.")
     if rf_us <= -1 or rf_local <= -1:
         raise ValueError("Risk-free rates must exceed -100%.")
+    if local_spread_override is not None and local_spread_override < 0:
+        raise ValueError("The local-currency borrowing spread must be nonnegative.")
     de = debt_fraction / (1 - debt_fraction)
     beta_e = beta_u * (1 + (1 - tax) * de)
     equity_us = rf_us + beta_e * erp
     debt_us = rf_us + spread
     factor = (1 + rf_local) / (1 + rf_us)
     equity_local = (1 + equity_us) * factor - 1
-    debt_local = rf_local + spread
+    spread_local_default = spread * factor
+    spread_local = spread_local_default if local_spread_override is None else local_spread_override
+    debt_local = rf_local + spread_local
     wacc_us = (1 - debt_fraction) * equity_us + debt_fraction * debt_us * (1 - tax)
     wacc_local = (1 - debt_fraction) * equity_local + debt_fraction * debt_local * (1 - tax)
     return {"debt_equity": de, "beta_equity": beta_e, "conversion_factor": factor,
+            "spread_us": spread, "spread_local_default": spread_local_default,
+            "spread_local": spread_local, "local_spread_overridden": local_spread_override is not None,
             "equity_us": equity_us, "debt_us": debt_us, "wacc_us": wacc_us,
             "equity_local": equity_local, "debt_local": debt_local, "wacc_local": wacc_local}
 
@@ -399,13 +409,30 @@ def spread_input(benchmark: dict | None) -> tuple[float | None, bool]:
         st.info("BBB spread unavailable. Enter a borrowing spread manually or refresh source data.")
     if not manual or "spread" not in st.session_state:
         st.session_state["spread"] = sourced_pct
-    value = st.number_input("Borrowing spread over local 10-year yield (percentage points)",
+    value = st.number_input("USD borrowing spread over U.S. 10-year yield (percentage points)",
                             min_value=0.0, max_value=50.0, value=None, step=0.01, format="%.2f",
                             key="spread", disabled=not manual,
                             placeholder="Enter a borrowing spread",
                             help="Uses the BBB spread unless overridden. 1.00 means 100 basis points. "
-                                 "The spread is added to the selected country's 10-year yield, "
-                                 "and to the U.S. yield for the USD comparison.")
+                                 "The spread is added to the U.S. yield. The local-currency default "
+                                 "is calculated using the gross yield ratio and can be overridden separately.")
+    return value, manual
+
+
+def local_spread_input(default_spread: float, currency: str, country: str) -> tuple[float | None, bool]:
+    """Recompute the automatic spread; retain an explicit override for this country."""
+    key = f"local_spread_{country_key(country)}"
+    manual = st.checkbox(f"Override {currency} borrowing spread", value=False, key=f"{key}_override")
+    st.caption(f"Converted default: {default_spread:.4%} "
+               f"({default_spread * 10000:.2f} basis points)")
+    if not manual or key not in st.session_state:
+        st.session_state[key] = default_spread * 100
+    value = st.number_input(f"{currency} borrowing spread over local 10-year yield (percentage points)",
+                            min_value=0.0, value=None, step=0.01, format="%.4f", key=key,
+                            disabled=not manual, placeholder="Enter a local-currency spread",
+                            help="Defaults to the USD spread × (1 + local yield) / (1 + U.S. yield). "
+                                 "1.00 means 100 basis points. An override replaces only the local "
+                                 "spread; uncheck the box to resume automatic conversion.")
     return value, manual
 
 
@@ -517,6 +544,29 @@ def main():
         st.stop()
     d, erp, spread = debt_pct / 100, erp_pct / 100, spread_pct / 100
     model = calculate(float(beta_u), d, tax, erp, rf_us, rf_local, spread)
+    override_local_spread = False
+    local_spread_override = None
+    st.subheader("Borrowing spreads")
+    a, b = st.columns(2)
+    with a:
+        st.metric("Borrowing spread · USD", f"{spread:.4%}")
+        st.caption(f"{spread * 10000:.2f} basis points over the U.S. 10-year yield")
+    if not is_us:
+        with b:
+            local_spread_display = st.empty()
+            local_spread_caption = st.empty()
+            local_spread_pct, override_local_spread = local_spread_input(
+                model["spread_local_default"], currency, country)
+            if local_spread_pct is None:
+                st.info("Enter the local-currency borrowing spread or uncheck its override.")
+                st.stop()
+            if override_local_spread:
+                local_spread_override = local_spread_pct / 100
+                model = calculate(float(beta_u), d, tax, erp, rf_us, rf_local, spread,
+                                  local_spread_override=local_spread_override)
+            local_spread_display.metric(f"Borrowing spread used · {currency}", f"{model['spread_local']:.4%}")
+            local_spread_caption.caption(f"{model['spread_local'] * 10000:.2f} basis points · "
+                                         + ("Manual override" if override_local_spread else "Automatic conversion"))
     st.subheader(industry)
     st.caption(f"{int(row['Firms'])} U.S. firms. Beta data dated {industry_data['date']}. "
                f"Tax jurisdiction: {country}; the same tax rate is used in both currency scenarios.")
@@ -554,23 +604,29 @@ def main():
         st.latex(r"\beta_E=\beta_U\left[1+(1-\tau)\frac{d}{1-d}\right]")
         st.latex(r"R_e=R_f+\beta_E\,ERP,\qquad R_d=R_f+s")
         st.latex(r"1+R_e^*=(1+R_e)\frac{1+R_f^*}{1+R_f}")
-        st.latex(r"R_d^*=R_f^*+s")
+        st.latex(r"s_{\mathrm{default}}^*=s\frac{1+R_f^*}{1+R_f},\qquad R_d^*=R_f^*+s^*")
+        st.latex(r"\text{Without an override:}\quad 1+R_d^*=(1+R_d)\frac{1+R_f^*}{1+R_f}")
         st.latex(r"\mathrm{WACC}^*=(1-d)R_e^*+dR_d^*(1-\tau)")
         st.write("The star denotes the selected country's currency. Rf is the U.S. 10-year yield; "
                  "Rf* is the selected country's 10-year yield. All rates in the formulas are annual decimals. "
-                 "The borrowing spread is added directly to the selected country's 10-year yield. "
-                 "For the USD comparison, the same spread is added to the U.S. 10-year yield.")
-        st.write("The local-currency WACC combines the converted equity cost with the local 10-year "
-                 "yield plus the borrowing spread, applying the tax deduction to local interest. "
-                 "The gross-return currency conversion applies only to the equity cost.")
+                 "The USD spread s is added to the U.S. yield. By default, the local spread s* equals "
+                 "s times the gross yield ratio (1 + Rf*) / (1 + Rf). This is equivalent to converting "
+                 "the entire pretax borrowing rate with the same formula used for equity.")
+        st.write("A local-currency override replaces the calculated spread s* in Rd* = Rf* + s*. "
+                 "It changes only the local debt cost and local WACC; USD costs and the equity "
+                 "conversion are unchanged. The local WACC applies the tax deduction to local interest "
+                 "after calculating the local pretax borrowing cost.")
 
     with st.expander("Assumptions and interpretation", expanded=True):
-        st.markdown("""
+        st.markdown(r"""
 - The selected U.S. industry's unlevered beta is the project's business-risk proxy in every country. It is relevered using the project's target debt share.
 - Debt and equity weights are target weights. The industry sample's debt ratio is not used as the project's financing ratio.
 - The selected country's Damodaran corporate tax rate proxies the marginal rate on interest deductions. An override allows a different tax jurisdiction or project-specific rate.
 - Interest is fully deductible and tax benefits can be used immediately. There are no preferred shares, issuance fees, or financial-distress costs.
-- The local pretax borrowing cost equals the selected country's 10-year yield plus the entered spread. The USD comparison adds that same spread to the U.S. yield. The spread is held fixed when the debt share changes; the model does not estimate how lenders would reprice higher leverage.
+- The BBB spread is the default USD borrowing spread, which can be overridden. The USD pretax borrowing cost equals the U.S. 10-year yield plus this spread.
+- By default, the foreign-currency spread is $s^* = s\,\frac{1+R_f^*}{1+R_f}$, where $s$ is the USD spread and $R_f$ and $R_f^*$ are the U.S. and selected-country 10-year yields, expressed as annual decimals. The app reports the converted spread in percentage points and basis points. This applies the same gross-return currency conversion to debt and equity.
+- The local pretax borrowing cost equals the selected country's 10-year yield plus the local-currency spread. A separate override replaces the converted spread with the user's local-currency assumption; unchecking it restores automatic conversion. Actual credit spreads can differ because of credit risk, liquidity, investor demand and market conditions. The conversion is a modeling convention and does not estimate an observed local borrowing quote or currency-hedging cost.
+- The spreads are held fixed when the debt share changes; the model does not estimate how lenders would reprice higher leverage. In automatic mode, the local spread updates when the USD spread or either yield changes. A manual local spread remains fixed until changed or its override is unchecked.
 - The relevering formula assumes zero debt beta. With a positive borrowing spread, this is an approximation; the model does not separately estimate debt beta.
 - Ten-year government yields are used as risk-free proxies. Their differences can include sovereign credit and liquidity risk as well as currency effects. Countries using the same currency can therefore produce different results under this convention.
 - No additional country equity-risk premium is added.
@@ -584,11 +640,16 @@ def main():
          "Source date": taxes["date"] if taxes else "Unavailable",
          "Retrieved (UTC)": taxes["fetched"] if taxes else "Unavailable",
          "Used": f"{'Manual override' if override_tax else 'Source'}: {tax:.4%}"},
-        {"Input": "BBB borrowing spread", "Source": RATINGS_URL,
+        {"Input": "USD borrowing spread", "Source": RATINGS_URL,
          "Source date": bbb_spread["date"] if bbb_spread else "Unavailable",
          "Retrieved (UTC)": bbb_spread["fetched"] if bbb_spread else "Unavailable",
          "Used": f"{'Manual override' if override_spread else 'BBB spread'}: {spread:.4%}"},
     ]
+    if not is_us:
+        source_rows.append({"Input": f"{currency} borrowing spread", "Source": None,
+                            "Source date": "Not applicable", "Retrieved (UTC)": "Not applicable",
+                            "Used": f"{'Manual override' if override_local_spread else 'Converted USD spread'}: "
+                                    f"{model['spread_local']:.4%}; converted default: {model['spread_local_default']:.4%}"})
     for index, (name, quote, manual, rate) in enumerate([
             ("U.S. 10-year", us_quote, manual_us, rf_us),
             (f"{country} 10-year", local_quote, manual_local, rf_local)]):
@@ -614,7 +675,8 @@ def main():
     for _, item in industries.iterrows():
         if pd.isna(item[beta_column]):
             continue
-        computed = calculate(float(item[beta_column]), d, tax, erp, rf_us, rf_local, spread)
+        computed = calculate(float(item[beta_column]), d, tax, erp, rf_us, rf_local, spread,
+                             local_spread_override=local_spread_override)
         all_rows.append({"Industry": item["Industry"], "Firms": int(item["Firms"]),
                          "Unlevered beta used": item[beta_column], "Equity beta": computed["beta_equity"],
                          "Equity cost USD (%)": computed["equity_us"] * 100,
@@ -623,15 +685,18 @@ def main():
                          "WACC local (%)": computed["wacc_local"] * 100})
     with st.expander("Compare all U.S. industries"):
         st.dataframe(pd.DataFrame(all_rows), hide_index=True, width="stretch")
-        st.caption("Every row uses the same country, tax, financing share, equity premium and borrowing spread.")
+        st.caption("Every row uses the same country, tax, financing share, equity premium and currency-specific borrowing spreads.")
     export = {
         "generated_utc": now_utc(), "industry": industry, "country": country, "currency": currency,
         "beta_measure": beta_column, "beta_unlevered": float(beta_u), "debt_fraction": d,
         "tax_rate": tax, "equity_premium": erp, "rf_us": rf_us, "rf_local": rf_local,
         "borrowing_spread": spread, "results": model, "sources": source_rows,
         "borrowing_spread_overridden": override_spread, "bbb_spread_benchmark": bbb_spread,
+        "borrowing_spread_usd": spread, "borrowing_spread_local_default": model["spread_local_default"],
+        "borrowing_spread_local": model["spread_local"],
+        "borrowing_spread_local_overridden": override_local_spread,
         "source_refresh_failures": failures, "rate_units": "annual decimal",
-        "local_wacc_convention": "Convert equity cost; local pretax debt cost equals local 10-year yield plus spread; apply local interest tax shield.",
+        "local_wacc_convention": "Convert equity cost. Default local spread = USD spread * (1 + local yield) / (1 + US yield); a local override replaces it. Local pretax debt cost = local yield + local spread. Apply the tax shield to local interest.",
     }
     a, b = st.columns(2)
     a.download_button("Download selected calculation (JSON)", json.dumps(export, indent=2),
@@ -640,6 +705,10 @@ def main():
         Country=country, Currency=currency, **{"Tax rate (%)": tax * 100, "Debt share (%)": debt_pct,
         "ERP (%)": erp_pct, "Borrowing spread (pp)": spread_pct, "US 10Y (%)": rf_us * 100,
         "Borrowing spread overridden": override_spread,
+        "Borrowing spread USD (pp)": spread_pct,
+        "Borrowing spread local default (pp)": model["spread_local_default"] * 100,
+        "Borrowing spread local used (pp)": model["spread_local"] * 100,
+        "Borrowing spread local overridden": override_local_spread,
         "BBB benchmark spread (pp)": bbb_spread["spread"] * 100 if bbb_spread else None,
         "BBB spread source date": bbb_spread["date"] if bbb_spread else "Unavailable",
         "BBB spread retrieval UTC": bbb_spread["fetched"] if bbb_spread else "Unavailable",
@@ -657,4 +726,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
