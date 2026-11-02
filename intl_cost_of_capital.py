@@ -24,6 +24,7 @@ import streamlit as st
 BETA_URL = "https://pages.stern.nyu.edu/~adamodar/pc/datasets/betas.xls"
 BETA_PAGE = "https://pages.stern.nyu.edu/adamodar/New_Home_Page/datafile/Betas.html"
 TAX_URL = "https://pages.stern.nyu.edu/adamodar/New_Home_Page/datafile/ctryprem.html"
+RATINGS_URL = "https://pages.stern.nyu.edu/adamodar/New_Home_Page/datafile/ratings.html"
 BONDS_URL = "https://tradingeconomics.com/bonds"
 TE_API = "https://api.tradingeconomics.com/markets/bond"
 DEFAULT_INDUSTRY = "Software (System & Application)"
@@ -187,6 +188,50 @@ def parse_taxes(content: bytes) -> tuple[pd.DataFrame, str]:
     raise DataError("Could not identify Damodaran's country corporate-tax table.")
 
 
+def parse_bbb_spread(content: bytes) -> tuple[float, str]:
+    """Read the exact BBB row in the large non-financial firms' rating columns."""
+    soup = BeautifulSoup(content, "html.parser")
+    text = clean_text(soup.get_text(" ", strip=True))
+    match = re.search(r"(?:Data\s+used\s+is\s+as\s+of|Last\s+updated\s*:)\s*"
+                      r"([A-Za-z]+\s+(?:\d{1,2},?\s+)?\d{4})", text, re.I)
+    date = match.group(1) if match else "Not supplied"
+    for table in soup.find_all("table"):
+        if not re.search(r"\bnon\s?financial\b", normalized(table.get_text(" ", strip=True))):
+            continue
+        rating_col = spread_col = None
+        spreads = []
+        for row in table.find_all("tr"):
+            cells = [clean_text(c.get_text(" ", strip=True))
+                     for c in row.find_all(["td", "th"], recursive=False)]
+            labels = [normalized(c) for c in cells]
+            # The first rating/spread pair belongs to large non-financial firms;
+            # the separate financial-firm pair must not override it.
+            if "rating is" in labels or "rating" in labels:
+                rating_col = next(i for i, label in enumerate(labels)
+                                  if label in ("rating", "rating is"))
+                spread_col = next((i for i in range(rating_col + 1, len(labels))
+                                   if labels[i] in ("spread", "spread is", "default spread")), None)
+                continue
+            if rating_col is None or spread_col is None or len(cells) <= max(rating_col, spread_col):
+                continue
+            if not re.fullmatch(r"(?:Baa2\s*/\s*)?BBB", cells[rating_col], re.I):
+                continue
+            try:
+                if not cells[spread_col].endswith("%"):
+                    raise ValueError("Spread units are not percentages")
+                spread = number(cells[spread_col]) / 100
+                if not 0 <= spread <= .5:
+                    raise ValueError("Spread outside expected range")
+            except ValueError as exc:
+                raise DataError("Damodaran's BBB spread is missing or invalid.") from exc
+            spreads.append(spread)
+        if spreads:
+            if len(set(spreads)) != 1:
+                raise DataError("Damodaran's table contains conflicting BBB spreads.")
+            return spreads[0], date
+    raise DataError("Could not identify the BBB spread in Damodaran's non-financial-firm table.")
+
+
 def ten_year_symbol(symbol: str) -> bool:
     return bool(re.search(r"(?<!\d)10(?:YR|Y|:|$)", symbol.upper()))
 
@@ -281,6 +326,13 @@ def load_bonds(api_key: str = ""):
     return {"quotes": parse_bonds_html(fetch_bytes(BONDS_URL)), "fetched": now_utc(), "note": note}
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def load_bbb_spread():
+    spread, date = parse_bbb_spread(fetch_bytes(RATINGS_URL))
+    return {"spread": spread, "rating": "BBB", "date": date,
+            "fetched": now_utc(), "source": RATINGS_URL}
+
+
 def calculate(beta_u: float, debt_fraction: float, tax: float, erp: float,
               rf_us: float, rf_local: float, spread: float) -> dict:
     """Compute USD and selected-currency component costs, then each WACC.
@@ -335,24 +387,47 @@ def get_api_key() -> str:
     return str(key)
 
 
+def spread_input(benchmark: dict | None) -> tuple[float | None, bool]:
+    """Follow source updates in automatic mode; preserve explicit manual overrides."""
+    sourced_pct = benchmark["spread"] * 100 if benchmark else None
+    manual = st.checkbox("Override BBB borrowing spread", value=benchmark is None,
+                         key="spread_override")
+    if benchmark:
+        st.caption(f"Damodaran BBB spread: {benchmark['spread']:.2%} "
+                   f"({benchmark['spread'] * 10000:.0f} basis points) · {benchmark['date']}")
+    else:
+        st.info("BBB spread unavailable. Enter a borrowing spread manually or refresh source data.")
+    if not manual or "spread" not in st.session_state:
+        st.session_state["spread"] = sourced_pct
+    value = st.number_input("Borrowing spread over local 10-year yield (percentage points)",
+                            min_value=0.0, max_value=50.0, value=None, step=0.01, format="%.2f",
+                            key="spread", disabled=not manual,
+                            placeholder="Enter a borrowing spread",
+                            help="Uses Damodaran's BBB spread unless overridden. 1.00 means 100 basis points. "
+                                 "The spread is added to the selected country's 10-year yield, "
+                                 "and to the U.S. yield for the USD comparison.")
+    return value, manual
+
+
 def main():
     st.set_page_config(page_title="Cost of capital", page_icon="📊", layout="wide")
     st.title("Cost of capital")
-    st.caption("U.S. industry betas, corporate taxes, and 10-year government bond yields")
+    st.caption("U.S. industry betas, corporate taxes, BBB borrowing spreads, and 10-year government bond yields")
     with st.sidebar:
         st.header("Project assumptions")
         if st.button("Refresh source data", width="stretch"):
             load_industries.clear()
             load_taxes.clear()
             load_bonds.clear()
+            load_bbb_spread.clear()
             st.rerun()
 
     api_key = get_api_key()
     results, failures = {}, {}
     loaders = {"industries": load_industries, "taxes": load_taxes,
-               "bonds": lambda: load_bonds(api_key)}
+               "bonds": lambda: load_bonds(api_key), "BBB spread": load_bbb_spread}
     with st.spinner("Retrieving source data…"):
-        with ThreadPoolExecutor(max_workers=3) as pool:
+        with ThreadPoolExecutor(max_workers=4) as pool:
             futures = {name: pool.submit(loader) for name, loader in loaders.items()}
             for name, future in futures.items():
                 try:
@@ -376,6 +451,7 @@ def main():
     industry_data = results["industries"]
     industries = industry_data["data"]
     taxes = results.get("taxes")
+    bbb_spread = results.get("BBB spread")
     bonds = results.get("bonds", {"quotes": {}, "fetched": "Unavailable", "note": ""})
     quotes = bonds["quotes"]
     if bonds["note"]:
@@ -392,8 +468,7 @@ def main():
         erp_pct = st.number_input("Annual equity risk premium (%)", 0.0, 50.0, 6.5, 0.1, key="erp")
         debt_pct = st.slider("Fraction financed with debt (%)", 0.0, 99.0, 30.0, 1.0, key="debt_fraction",
                              help="Target market-value debt share D/(D+E). 100% debt leaves no equity beta.")
-        spread_pct = st.number_input("Borrowing spread over local 10-year yield (percentage points)", 0.0, 50.0, 2.0, 0.1,
-                                     key="spread", help="2.0 means 200 basis points above the selected country's 10-year yield. The USD comparison adds the same spread to the U.S. yield.")
+        spread_pct, override_spread = spread_input(bbb_spread)
         available_countries = sorted(set(taxes["data"]["Country"]) if taxes else
                                      (set(CURRENCIES) | {q["country"] for q in quotes.values()}))
         country = st.selectbox("Project country / currency", available_countries,
@@ -436,8 +511,8 @@ def main():
                 st.info(f"No verified 10-year quote was retrieved for {country}. Enter its local-currency 10-year yield.")
             rf_local, manual_local = rate_input(f"{country} 10-year yield", local_quote, f"rf_{country}")
 
-    if tax is None or rf_us is None or rf_local is None:
-        st.info("Enter the missing tax rate or bond yield above to calculate results. Missing data is never assumed to be zero.")
+    if tax is None or rf_us is None or rf_local is None or spread_pct is None:
+        st.info("Enter the missing tax rate, bond yield or borrowing spread to calculate results. Missing data is never assumed to be zero.")
         st.latex(r"\mathrm{WACC}=\frac{E}{D+E}R_e+\frac{D}{D+E}R_d(1-\tau)")
         st.stop()
     d, erp, spread = debt_pct / 100, erp_pct / 100, spread_pct / 100
@@ -492,14 +567,13 @@ def main():
     with st.expander("Assumptions and interpretation", expanded=True):
         st.markdown("""
 - The selected U.S. industry's unlevered beta is the project's business-risk proxy in every country. It is relevered using the project's target debt share.
-- Debt and equity weights are target **market-value** weights. The industry sample's debt ratio is not used as the project's financing ratio.
-- The standard unlevered beta includes cash. The optional cash-adjusted measure represents operating assets.
+- Debt and equity weights are target weights. The industry sample's debt ratio is not used as the project's financing ratio.
 - The selected country's Damodaran corporate tax rate proxies the marginal rate on interest deductions. An override allows a different tax jurisdiction or project-specific rate.
 - Interest is fully deductible and tax benefits can be used immediately. There are no preferred shares, issuance fees, or financial-distress costs.
 - The local pretax borrowing cost equals the selected country's 10-year yield plus the entered spread. The USD comparison adds that same spread to the U.S. yield. The spread is held fixed when the debt share changes; the model does not estimate how lenders would reprice higher leverage.
 - The relevering formula assumes zero debt beta. With a positive borrowing spread, this is an approximation; the model does not separately estimate debt beta.
-- Ten-year government yields are used as risk-free proxies, as requested. Their differences can include sovereign credit and liquidity risk as well as currency effects. Countries using the same currency can therefore produce different results under this convention.
-- Equity-cost currency conversion follows the supplied gross-return formula. It does not by itself establish that international arbitrage or expected inflation justifies the yield ratio. No additional country equity-risk premium is added.
+- Ten-year government yields are used as risk-free proxies. Their differences can include sovereign credit and liquidity risk as well as currency effects. Countries using the same currency can therefore produce different results under this convention.
+- No additional country equity-risk premium is added.
 - The same tax rate and financing weights are held fixed in the USD and local-currency calculations. All outputs are nominal annual rates. A 100% debt share is excluded because an equity cost cannot then be estimated by this formula.
 """)
 
@@ -510,10 +584,15 @@ def main():
          "Source date": taxes["date"] if taxes else "Unavailable",
          "Retrieved (UTC)": taxes["fetched"] if taxes else "Unavailable",
          "Used": f"{'Manual override' if override_tax else 'Source'}: {tax:.4%}"},
+        {"Input": "BBB borrowing spread", "Source": RATINGS_URL,
+         "Source date": bbb_spread["date"] if bbb_spread else "Unavailable",
+         "Retrieved (UTC)": bbb_spread["fetched"] if bbb_spread else "Unavailable",
+         "Used": f"{'Manual override' if override_spread else 'Damodaran BBB'}: {spread:.4%}"},
     ]
-    for name, quote, manual, rate in [("U.S. 10-year", us_quote, manual_us, rf_us),
-                                      (f"{country} 10-year", local_quote, manual_local, rf_local)]:
-        if is_us and len(source_rows) == 3:
+    for index, (name, quote, manual, rate) in enumerate([
+            ("U.S. 10-year", us_quote, manual_us, rf_us),
+            (f"{country} 10-year", local_quote, manual_local, rf_local)]):
+        if is_us and index == 1:
             break
         source_rows.append({"Input": name, "Source": quote["url"] if quote else BONDS_URL,
                             "Source date": quote["quote_date"] if quote else "Unavailable",
@@ -522,7 +601,7 @@ def main():
     with st.expander("Sources and data dates"):
         st.dataframe(pd.DataFrame(source_rows), hide_index=True, width="stretch",
                      column_config={"Source": st.column_config.LinkColumn("Source")})
-        st.caption("Beta and tax downloads are cached for 24 hours; bond quotes for 15 minutes. "
+        st.caption("Beta, tax and BBB spread downloads are cached for 24 hours; bond quotes for 15 minutes. "
                    "Quote dates are shown exactly as supplied and may omit a year or timezone. "
                    "Retrieval time is not the observation time. Refresh source data clears the caches.")
         if not api_key:
@@ -550,6 +629,7 @@ def main():
         "beta_measure": beta_column, "beta_unlevered": float(beta_u), "debt_fraction": d,
         "tax_rate": tax, "equity_premium": erp, "rf_us": rf_us, "rf_local": rf_local,
         "borrowing_spread": spread, "results": model, "sources": source_rows,
+        "borrowing_spread_overridden": override_spread, "bbb_spread_benchmark": bbb_spread,
         "source_refresh_failures": failures, "rate_units": "annual decimal",
         "local_wacc_convention": "Convert equity cost; local pretax debt cost equals local 10-year yield plus spread; apply local interest tax shield.",
     }
@@ -559,6 +639,11 @@ def main():
     csv = pd.DataFrame(all_rows).assign(
         Country=country, Currency=currency, **{"Tax rate (%)": tax * 100, "Debt share (%)": debt_pct,
         "ERP (%)": erp_pct, "Borrowing spread (pp)": spread_pct, "US 10Y (%)": rf_us * 100,
+        "Borrowing spread overridden": override_spread,
+        "BBB benchmark spread (pp)": bbb_spread["spread"] * 100 if bbb_spread else None,
+        "BBB spread source date": bbb_spread["date"] if bbb_spread else "Unavailable",
+        "BBB spread retrieval UTC": bbb_spread["fetched"] if bbb_spread else "Unavailable",
+        "BBB spread source": RATINGS_URL,
         "Local 10Y (%)": rf_local * 100, "Beta measure": beta_column,
         "Beta source date": industry_data["date"], "Tax source date": taxes["date"] if taxes else "Manual",
         "Tax overridden": override_tax, "US yield overridden": manual_us,
