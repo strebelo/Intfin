@@ -286,7 +286,8 @@ def calculate(beta_u: float, debt_fraction: float, tax: float, erp: float,
     """Compute USD and selected-currency component costs, then each WACC.
 
     Hamada relevering assumes zero debt beta. The chosen tax jurisdiction and
-    capital structure are held fixed across the two currency representations.
+    capital structure are held fixed across the two currency scenarios.
+    Each borrowing cost is its own currency's 10-year yield plus the same spread.
     The local WACC is a financing scenario with interest deductible locally.
     """
     values = (beta_u, debt_fraction, tax, erp, rf_us, rf_local, spread)
@@ -304,7 +305,7 @@ def calculate(beta_u: float, debt_fraction: float, tax: float, erp: float,
     debt_us = rf_us + spread
     factor = (1 + rf_local) / (1 + rf_us)
     equity_local = (1 + equity_us) * factor - 1
-    debt_local = (1 + debt_us) * factor - 1
+    debt_local = rf_local + spread
     wacc_us = (1 - debt_fraction) * equity_us + debt_fraction * debt_us * (1 - tax)
     wacc_local = (1 - debt_fraction) * equity_local + debt_fraction * debt_local * (1 - tax)
     return {"debt_equity": de, "beta_equity": beta_e, "conversion_factor": factor,
@@ -313,7 +314,7 @@ def calculate(beta_u: float, debt_fraction: float, tax: float, erp: float,
 
 
 def rate_input(label: str, quote: dict | None, key: str) -> tuple[float | None, bool]:
-    manual = st.checkbox(f"Enter {label.lower()} manually", value=quote is None, key=f"{key}_manual")
+    manual = st.checkbox(f"Enter {label} manually", value=quote is None, key=f"{key}_manual")
     if quote:
         st.caption(f"Source quote: {quote['rate']:.4%} · {quote['quote_date']}")
     if manual:
@@ -391,8 +392,8 @@ def main():
         erp_pct = st.number_input("Annual equity risk premium (%)", 0.0, 50.0, 6.5, 0.1, key="erp")
         debt_pct = st.slider("Fraction financed with debt (%)", 0.0, 99.0, 30.0, 1.0, key="debt_fraction",
                              help="Target market-value debt share D/(D+E). 100% debt leaves no equity beta.")
-        spread_pct = st.number_input("USD borrowing spread (percentage points)", 0.0, 50.0, 2.0, 0.1,
-                                     key="spread", help="2.0 means 200 basis points above the U.S. 10-year yield.")
+        spread_pct = st.number_input("Borrowing spread over local 10-year yield (percentage points)", 0.0, 50.0, 2.0, 0.1,
+                                     key="spread", help="2.0 means 200 basis points above the selected country's 10-year yield. The USD comparison adds the same spread to the U.S. yield.")
         available_countries = sorted(set(taxes["data"]["Country"]) if taxes else
                                      (set(CURRENCIES) | {q["country"] for q in quotes.values()}))
         country = st.selectbox("Project country / currency", available_countries,
@@ -478,16 +479,15 @@ def main():
         st.latex(r"\beta_E=\beta_U\left[1+(1-\tau)\frac{d}{1-d}\right]")
         st.latex(r"R_e=R_f+\beta_E\,ERP,\qquad R_d=R_f+s")
         st.latex(r"1+R_e^*=(1+R_e)\frac{1+R_f^*}{1+R_f}")
-        st.latex(r"1+R_d^*=(1+R_d)\frac{1+R_f^*}{1+R_f}")
+        st.latex(r"R_d^*=R_f^*+s")
         st.latex(r"\mathrm{WACC}^*=(1-d)R_e^*+dR_d^*(1-\tau)")
         st.write("The star denotes the selected country's currency. Rf is the U.S. 10-year yield; "
                  "Rf* is the selected country's 10-year yield. All rates in the formulas are annual decimals. "
-                 "The borrowing spread is specified in USD. Its converted local spread is "
-                 "s × (1 + Rf*) / (1 + Rf).")
-        st.write("The local-currency WACC is recomputed from converted equity and pretax debt costs, "
-                 "with the tax deduction applied to local interest. It represents local-currency financing. "
-                 "Directly converting the already-tax-adjusted USD WACC describes a different tax-shield "
-                 "assumption and will generally give a different result.")
+                 "The borrowing spread is added directly to the selected country's 10-year yield. "
+                 "For the USD comparison, the same spread is added to the U.S. 10-year yield.")
+        st.write("The local-currency WACC combines the converted equity cost with the local 10-year "
+                 "yield plus the borrowing spread, applying the tax deduction to local interest. "
+                 "The gross-return currency conversion applies only to the equity cost.")
 
     with st.expander("Assumptions and interpretation", expanded=True):
         st.markdown("""
@@ -496,10 +496,10 @@ def main():
 - The standard unlevered beta includes cash. The optional cash-adjusted measure represents operating assets.
 - The selected country's Damodaran corporate tax rate proxies the marginal rate on interest deductions. An override allows a different tax jurisdiction or project-specific rate.
 - Interest is fully deductible and tax benefits can be used immediately. There are no preferred shares, issuance fees, or financial-distress costs.
-- The borrowing spread is the user's assumption and is held fixed when the debt share changes. The model does not estimate how lenders would reprice higher leverage.
+- The local pretax borrowing cost equals the selected country's 10-year yield plus the entered spread. The USD comparison adds that same spread to the U.S. yield. The spread is held fixed when the debt share changes; the model does not estimate how lenders would reprice higher leverage.
 - The relevering formula assumes zero debt beta. With a positive borrowing spread, this is an approximation; the model does not separately estimate debt beta.
 - Ten-year government yields are used as risk-free proxies, as requested. Their differences can include sovereign credit and liquidity risk as well as currency effects. Countries using the same currency can therefore produce different results under this convention.
-- Currency conversion follows the supplied gross-return formula. It does not by itself establish that international arbitrage or expected inflation justifies the yield ratio. No additional country equity-risk premium is added.
+- Equity-cost currency conversion follows the supplied gross-return formula. It does not by itself establish that international arbitrage or expected inflation justifies the yield ratio. No additional country equity-risk premium is added.
 - The same tax rate and financing weights are held fixed in the USD and local-currency calculations. All outputs are nominal annual rates. A 100% debt share is excluded because an equity cost cannot then be estimated by this formula.
 """)
 
@@ -549,16 +549,16 @@ def main():
         "generated_utc": now_utc(), "industry": industry, "country": country, "currency": currency,
         "beta_measure": beta_column, "beta_unlevered": float(beta_u), "debt_fraction": d,
         "tax_rate": tax, "equity_premium": erp, "rf_us": rf_us, "rf_local": rf_local,
-        "usd_borrowing_spread": spread, "results": model, "sources": source_rows,
+        "borrowing_spread": spread, "results": model, "sources": source_rows,
         "source_refresh_failures": failures, "rate_units": "annual decimal",
-        "local_wacc_convention": "Convert equity and pretax debt costs, then apply local interest tax shield.",
+        "local_wacc_convention": "Convert equity cost; local pretax debt cost equals local 10-year yield plus spread; apply local interest tax shield.",
     }
     a, b = st.columns(2)
     a.download_button("Download selected calculation (JSON)", json.dumps(export, indent=2),
                       "cost_of_capital.json", "application/json")
     csv = pd.DataFrame(all_rows).assign(
         Country=country, Currency=currency, **{"Tax rate (%)": tax * 100, "Debt share (%)": debt_pct,
-        "ERP (%)": erp_pct, "USD spread (pp)": spread_pct, "US 10Y (%)": rf_us * 100,
+        "ERP (%)": erp_pct, "Borrowing spread (pp)": spread_pct, "US 10Y (%)": rf_us * 100,
         "Local 10Y (%)": rf_local * 100, "Beta measure": beta_column,
         "Beta source date": industry_data["date"], "Tax source date": taxes["date"] if taxes else "Manual",
         "Tax overridden": override_tax, "US yield overridden": manual_us,
@@ -572,4 +572,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
