@@ -23,7 +23,20 @@ import streamlit as st
 
 BETA_URL = "https://pages.stern.nyu.edu/~adamodar/pc/datasets/betas.xls"
 BETA_PAGE = "https://pages.stern.nyu.edu/adamodar/New_Home_Page/datafile/Betas.html"
-TAX_URL = "https://pages.stern.nyu.edu/adamodar/New_Home_Page/datafile/ctryprem.html"
+TAX_PAGE = (
+    "https://www.oecd.org/en/publications/corporate-tax-statistics-2024_9c27d6e8-en/"
+    "full-report/statutory-corporate-income-tax-rates_440f9286.html"
+    "#chapter-d1e2342-08e74a33fb"
+)
+# OECD Corporate Tax Statistics: combined central + sub-central statutory rate.
+# Retrieve observations from 2024 onward; the parser selects each country's latest
+# available non-missing year, excluding years later than the current year.
+TAX_URL = (
+    "https://sdmx.oecd.org/public/rest/v1/data/"
+    "OECD.CTP.TPS,DSD_TAX_CIT@DF_CIT,2.0/.A.CIT_C.ST.PT_INC_TAX.S13._Z._Z._Z"
+    "?startPeriod=2024&format=csvfilewithlabels"
+)
+TAX_MEASURE = "OECD combined statutory corporate income tax rate"
 RATINGS_URL = "https://pages.stern.nyu.edu/adamodar/New_Home_Page/datafile/ratings.html"
 BONDS_URL = "https://tradingeconomics.com/bonds"
 TE_API = "https://api.tradingeconomics.com/markets/bond"
@@ -37,6 +50,10 @@ COUNTRY_ALIASES = {
     "united states of america": "united states", "usa": "united states",
     "russian federation": "russia", "viet nam": "vietnam",
     "slovak republic": "slovakia", "uk": "united kingdom",
+    "china people s republic of": "china", "china peoples republic of": "china",
+    "people s republic of china": "china", "hong kong china": "hong kong",
+    "macau china": "macau", "bailiwick of guernsey": "guernsey",
+    "brunei darussalam": "brunei", "cote d ivoire": "ivory coast",
 }
 CURRENCIES = {
     "United States": "USD", "United Kingdom": "GBP", "Japan": "JPY",
@@ -101,7 +118,7 @@ def fetch_bytes(url: str, params=None) -> bytes:
         response = requests.get(
             url, params=params, timeout=(8, 20),
             headers={"User-Agent": "Mozilla/5.0 (compatible; CostOfCapitalCalculator/1.0)",
-                     "Accept": "text/html,application/json,application/vnd.ms-excel,*/*"},
+                     "Accept": "text/csv,text/html,application/json,application/vnd.ms-excel,*/*"},
         )
         if response.status_code != 200:
             raise DataError(f"Source returned HTTP {response.status_code}.")
@@ -159,33 +176,54 @@ def parse_betas(content: bytes) -> tuple[pd.DataFrame, str]:
 
 
 def parse_taxes(content: bytes) -> tuple[pd.DataFrame, str]:
-    soup = BeautifulSoup(content, "html.parser")
-    for table in soup.find_all("table"):
-        headers = None
-        records = []
-        for row in table.find_all("tr"):
-            cells = [clean_text(c.get_text(" ", strip=True))
-                     for c in row.find_all(["td", "th"], recursive=False)]
-            labels = [normalized(c) for c in cells]
-            if "country" in labels and "corporate tax rate" in labels:
-                headers = {name: index for index, name in enumerate(labels)}
-                continue
-            if headers is None or len(cells) <= max(headers.values()):
-                continue
-            try:
-                tax = number(cells[headers["corporate tax rate"]]) / 100
-                country = cells[headers["country"]]
-                if not 0 <= tax <= 1 or not country:
-                    continue
-                records.append({"Country": country, "Tax rate": tax, "Key": country_key(country)})
-            except ValueError:
-                continue
-        if len(records) >= 20:
-            text = soup.get_text(" ", strip=True)
-            match = re.search(r"Last\s+updated\s*:\s*([A-Za-z]+\s+\d{1,2},\s*\d{4})", text, re.I)
-            date = match.group(1) if match else "Not supplied"
-            return pd.DataFrame(records).drop_duplicates("Key").sort_values("Country"), date
-    raise DataError("Could not identify Damodaran's country corporate-tax table.")
+    """Read labelled OECD SDMX CSV; do not mix central, targeted or effective rates."""
+    try:
+        raw = pd.read_csv(BytesIO(content), dtype=str, keep_default_na=False,
+                          encoding="utf-8-sig")
+    except (ValueError, UnicodeError, pd.errors.ParserError) as exc:
+        raise DataError("Could not read the OECD corporate-tax CSV.") from exc
+    filters = {"FREQ": "A", "MEASURE": "CIT_C", "TARGETING": "ST",
+               "UNIT_MEASURE": "PT_INC_TAX", "SECTOR": "S13",
+               "DIV_TREATMENT": "_Z", "RATE_STRUCTURE": "_Z", "TAX_BASE": "_Z"}
+    required = set(filters) | {"REF_AREA", "Reference area", "TIME_PERIOD",
+                               "OBS_VALUE", "UNIT_MULT"}
+    if not required.issubset(raw.columns):
+        raise DataError("The OECD tax response is missing required CSV columns.")
+    selected = raw
+    for column, code in filters.items():
+        selected = selected.loc[selected[column] == code]
+    records = []
+    current_year = datetime.now(timezone.utc).year
+    for _, row in selected.iterrows():
+        if not re.fullmatch(r"\d{4}", row["TIME_PERIOD"]):
+            raise DataError("The OECD tax response contains an invalid observation year.")
+        year = int(row["TIME_PERIOD"])
+        if year > current_year or not row["OBS_VALUE"].strip():
+            continue
+        try:
+            if number(row["UNIT_MULT"]) != 0:
+                raise ValueError("Unexpected unit multiplier")
+            tax = number(row["OBS_VALUE"]) / 100
+            if not 0 <= tax <= 1:
+                raise ValueError("Tax rate outside 0–100%")
+        except ValueError as exc:
+            raise DataError("The OECD tax response contains an invalid rate or unit.") from exc
+        country = clean_text(row["Reference area"])
+        if not country or not row["REF_AREA"].strip():
+            raise DataError("The OECD tax response contains a missing country label.")
+        records.append({"Country": country, "Tax rate": tax, "Key": country_key(country),
+                        "Year": year, "OECD country code": row["REF_AREA"]})
+    frame = pd.DataFrame(records)
+    if frame.empty:
+        raise DataError("No usable OECD combined statutory corporate tax rates were found.")
+    if (frame.groupby(["Key", "Year"])["Tax rate"].nunique() > 1).any():
+        raise DataError("The OECD tax response contains conflicting country/year rates.")
+    frame = frame.sort_values("Year").drop_duplicates("Key", keep="last")
+    if len(frame) < 20 or "united states" not in set(frame["Key"]):
+        raise DataError("OECD tax coverage is unexpectedly incomplete.")
+    first_year, last_year = int(frame["Year"].min()), int(frame["Year"].max())
+    date = str(last_year) if first_year == last_year else f"{first_year}–{last_year} (varies by country)"
+    return frame.sort_values("Country").reset_index(drop=True), date
 
 
 def parse_bbb_spread(content: bytes) -> tuple[float, str]:
@@ -310,7 +348,8 @@ def load_industries():
 @st.cache_data(ttl=86400, show_spinner=False)
 def load_taxes():
     frame, date = parse_taxes(fetch_bytes(TAX_URL))
-    return {"data": frame, "date": date, "fetched": now_utc(), "source": TAX_URL}
+    return {"data": frame, "date": date, "fetched": now_utc(), "source": TAX_URL,
+            "reference": TAX_PAGE, "measure": TAX_MEASURE}
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -457,13 +496,15 @@ def main():
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = {name: pool.submit(loader) for name, loader in loaders.items()}
             for name, future in futures.items():
+                # Do not reuse a pre-migration Damodaran tax table after a hot reload.
+                state_key = "last_good_taxes_oecd_v2" if name == "taxes" else f"last_good_{name}"
                 try:
                     results[name] = future.result()
-                    st.session_state[f"last_good_{name}"] = results[name]
+                    st.session_state[state_key] = results[name]
                 except Exception as exc:
                     failures[name] = str(exc) if isinstance(exc, DataError) else type(exc).__name__
-                    if f"last_good_{name}" in st.session_state:
-                        results[name] = st.session_state[f"last_good_{name}"]
+                    if state_key in st.session_state:
+                        results[name] = st.session_state[state_key]
     for name, error in failures.items():
         if name in results:
             st.warning(f"Could not refresh {name}. Using this session's last successful retrieval "
@@ -496,16 +537,23 @@ def main():
         debt_pct = st.slider("Fraction financed with debt (%)", 0.0, 99.0, 30.0, 1.0, key="debt_fraction",
                              help="Target market-value debt share D/(D+E). 100% debt leaves no equity beta.")
         spread_pct, override_spread = spread_input(bbb_spread)
-        available_countries = sorted(set(taxes["data"]["Country"]) if taxes else
-                                     (set(CURRENCIES) | {q["country"] for q in quotes.values()}))
+        country_names = {country_key(name): name for name in taxes["data"]["Country"]} if taxes else {}
+        country_names.update({country_key(q["country"]): q["country"] for q in quotes.values()})
+        # Prefer the first established display name when aliases share a currency.
+        country_names.update({country_key(name): name for name in reversed(CURRENCIES)})
+        available_countries = sorted(country_names.values())
         country = st.selectbox("Project country / currency", available_countries,
                                index=available_countries.index("United States") if "United States" in available_countries else 0,
                                key="country")
         matched_tax = taxes["data"].loc[taxes["data"]["Key"] == country_key(country)] if taxes else pd.DataFrame()
         sourced_tax = float(matched_tax.iloc[0]["Tax rate"]) if not matched_tax.empty else None
+        tax_year = int(matched_tax.iloc[0]["Year"]) if not matched_tax.empty else None
         override_tax = st.checkbox("Override corporate tax rate", value=sourced_tax is None, key="tax_override")
         if sourced_tax is not None:
-            st.caption(f"Damodaran corporate tax rate: {sourced_tax:.2%}")
+            st.caption(f"OECD combined statutory rate: {sourced_tax:.2%} · {tax_year}")
+            st.caption("Latest available observation; includes central and sub-central government taxes.")
+        else:
+            st.info("No OECD tax rate is available for this country. Enable the override and enter the applicable rate.")
         if override_tax:
             tax_value = st.number_input("Corporate tax rate (%)", 0.0, 100.0,
                                         value=None, step=0.5, key=f"tax_{country}",
@@ -621,7 +669,7 @@ def main():
         st.markdown(r"""
 - The selected U.S. industry's unlevered beta is the project's business-risk proxy in every country. It is relevered using the project's target debt share.
 - Debt and equity weights are target weights. The industry sample's debt ratio is not used as the project's financing ratio.
-- The selected country's Damodaran corporate tax rate proxies the marginal rate on interest deductions. An override allows a different tax jurisdiction or project-specific rate.
+- The selected country's latest available OECD combined statutory corporate income tax rate (central and sub-central government) proxies the marginal rate on interest deductions. The observation year is shown; it can differ across countries. This is the standard headline rate, not an effective tax rate or a special small-business rate. An override allows a different tax jurisdiction or project-specific rate.
 - Interest is fully deductible and tax benefits can be used immediately. There are no preferred shares, issuance fees, or financial-distress costs.
 - The BBB spread is the default USD borrowing spread, which can be overridden. The USD pretax borrowing cost equals the U.S. 10-year yield plus this spread.
 - By default, the foreign-currency spread is $s^* = s\,\frac{1+R_f^*}{1+R_f}$, where $s$ is the USD spread and $R_f$ and $R_f^*$ are the U.S. and selected-country 10-year yields, expressed as annual decimals. The app reports the converted spread in percentage points and basis points. This applies the same gross-return currency conversion to debt and equity.
@@ -636,10 +684,10 @@ def main():
     source_rows = [
         {"Input": "U.S. industry betas", "Source": BETA_URL, "Source date": industry_data["date"],
          "Retrieved (UTC)": industry_data["fetched"], "Used": beta_column},
-        {"Input": "Corporate tax rates", "Source": TAX_URL,
-         "Source date": taxes["date"] if taxes else "Unavailable",
+        {"Input": "Corporate tax rates", "Source": TAX_PAGE,
+         "Source date": str(tax_year) if tax_year is not None else "Unavailable",
          "Retrieved (UTC)": taxes["fetched"] if taxes else "Unavailable",
-         "Used": f"{'Manual override' if override_tax else 'Source'}: {tax:.4%}"},
+         "Used": f"{'Manual override' if override_tax else 'OECD combined statutory rate'}: {tax:.4%}"},
         {"Input": "USD borrowing spread", "Source": RATINGS_URL,
          "Source date": bbb_spread["date"] if bbb_spread else "Unavailable",
          "Retrieved (UTC)": bbb_spread["fetched"] if bbb_spread else "Unavailable",
@@ -662,6 +710,9 @@ def main():
     with st.expander("Sources"):
         st.dataframe(pd.DataFrame(source_rows), hide_index=True, width="stretch",
                      column_config={"Source": st.column_config.LinkColumn("Source")})
+        st.markdown(f"Corporate tax rates: [OECD source and methodology]({TAX_PAGE}) · "
+                    f"[OECD data download]({TAX_URL}). The reference report is from 2024; "
+                    "the app retrieves the latest available observation for each country from the underlying database.")
         st.caption("Beta, tax and BBB spread downloads are cached for 24 hours; bond quotes for 15 minutes. "
                    "Quote dates are shown exactly as supplied and may omit a year or timezone. "
                    "Retrieval time is not the observation time. Refresh source data clears the caches.")
@@ -690,6 +741,9 @@ def main():
         "generated_utc": now_utc(), "industry": industry, "country": country, "currency": currency,
         "beta_measure": beta_column, "beta_unlevered": float(beta_u), "debt_fraction": d,
         "tax_rate": tax, "equity_premium": erp, "rf_us": rf_us, "rf_local": rf_local,
+        "tax_rate_overridden": override_tax, "tax_benchmark_rate": sourced_tax,
+        "tax_benchmark_year": tax_year, "tax_measure": TAX_MEASURE,
+        "tax_data_source": TAX_URL, "tax_reference": TAX_PAGE,
         "borrowing_spread": spread, "results": model, "sources": source_rows,
         "borrowing_spread_overridden": override_spread, "bbb_spread_benchmark": bbb_spread,
         "borrowing_spread_usd": spread, "borrowing_spread_local_default": model["spread_local_default"],
@@ -714,7 +768,9 @@ def main():
         "BBB spread retrieval UTC": bbb_spread["fetched"] if bbb_spread else "Unavailable",
         "BBB spread source": RATINGS_URL,
         "Local 10Y (%)": rf_local * 100, "Beta measure": beta_column,
-        "Beta source date": industry_data["date"], "Tax source date": taxes["date"] if taxes else "Manual",
+        "Beta source date": industry_data["date"], "Tax source date": tax_year,
+        "Tax benchmark (%)": sourced_tax * 100 if sourced_tax is not None else None,
+        "Tax measure": TAX_MEASURE, "Tax reference": TAX_PAGE,
         "Tax overridden": override_tax, "US yield overridden": manual_us,
         "Local yield overridden": manual_local, "US yield quote date": us_quote["quote_date"] if us_quote else "Manual",
         "Local yield quote date": local_quote["quote_date"] if local_quote else "Manual",
@@ -726,3 +782,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
