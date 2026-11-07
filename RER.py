@@ -688,6 +688,28 @@ def read_saved_export(file):
 def main():
     st.set_page_config(page_title="Two-country real exchange rate", layout="wide")
     st.title("Two-country real exchange rate")
+    st.info("""
+**Disclaimer — educational use only**
+
+This app is provided for educational and informational purposes only.
+It does not provide investment, financial, or trading advice and should
+not be relied upon to make financial decisions.
+
+Data and calculations may contain errors, omissions, delays, or revisions.
+Results depend on the selected data, assumptions, and methodology.
+Real exchange rate measures do not establish a currency’s fair value
+or predict future exchange rates.
+
+The app is provided “as is,” without warranties of accuracy, completeness,
+timeliness, or fitness for a particular purpose. Users should independently
+verify information before relying on it. To the fullest extent permitted
+by applicable law, the author disclaims liability for losses or damages
+arising from use of, or reliance on, this app.
+
+Source data: International Monetary Fund (IMF). Calculations and
+interpretations are the author’s own. This app is not an official
+IMF product and is not endorsed by the IMF.
+""")
     st.write("Choose two countries or the Euro area and an analysis sample. The app plots the real exchange rate normalized to a sample average of 100 and the nominal exchange rate in actual units.")
     mode = st.radio("Data source", ["Live IMF data", "Saved CSV export"], horizontal=True)
     if mode == "Saved CSV export":
