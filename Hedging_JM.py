@@ -3,11 +3,11 @@
 
 Run this file with Python 3.11 or 3.12:
     python -m pip install "streamlit>=1.49,<2" "pandas>=2.2,<3" "numpy>=1.26,<3" python-dateutil
-    python -m streamlit run app.py
+    python -m streamlit run Hedging_JM.py
 
 This file contains the pricing and simulation engine, the Streamlit interface,
-and the ECB daily spot snapshot. The historical government-yield option reads
-the online sources listed in the interface or a yield CSV you supply.
+and snapshots of ECB spot fixings, Eurostat money-market curves and effective-dated
+NBP and ECB policy rates. Historical forwards can also use uploaded dated rates.
 """
 from __future__ import annotations
 
@@ -107,7 +107,8 @@ def _signal_fraction(spot, average, band):
 def evaluate_policies(dates, spots, cashflows, pln_yields, eur_yields,
                       hedge_fraction=0.25, direction="pln_receipts",
                       delay="2w", band_bps=5.0, spread_bps=0.0, audit=False,
-                      schedule="once", year_end_catchup=False):
+                      schedule="once", year_end_catchup=False,
+                      rate_convention="annual_effective", rate_dates=None):
     """Return December cash by strategy for each paired path. Positive advantage favors tactical.
 
     One January–December trading grid is used per call. Cash flows are fixed
@@ -174,8 +175,22 @@ def evaluate_policies(dates, spots, cashflows, pln_yields, eur_yields,
     pln_rate = _daily_rates(pln_yields, len(days), "PLN yields")
     euro_rate = _daily_rates(eur_yields, len(days), "EUR yields")
     maturity = len(days) - 1
-    tau = (days[-1] - days).days.to_numpy() / 365
-    carry = np.exp(tau * (np.log1p(pln_rate) - np.log1p(euro_rate)))
+    days_left = (days[-1] - days).days.to_numpy()
+    if rate_convention == "annual_effective":
+        carry = np.exp(days_left / 365 * (np.log1p(pln_rate) - np.log1p(euro_rate)))
+    elif rate_convention in ("simple_money_market", "simple_interbank"):
+        pln_basis = 365 if rate_convention == "simple_interbank" else 360
+        pln_gross = 1 + pln_rate * days_left / pln_basis
+        eur_gross = 1 + euro_rate * days_left / 360
+        if min(pln_gross.min(), eur_gross.min()) <= 0:
+            raise ValueError("Rates must give positive gross accumulation factors to December.")
+        carry = pln_gross / eur_gross
+    else:
+        raise ValueError("Unknown interest rate convention.")
+    if rate_dates is not None:
+        rate_dates = pd.DatetimeIndex(rate_dates)
+        if len(rate_dates) != len(days) or rate_dates.hasnans or (rate_dates > days).any():
+            raise ValueError("Each trade date needs a valid rate date on or before execution.")
     ask_factor = 1 + spread_bps / 10_000
     band = band_bps / 10_000
     n_paths = len(prices)
@@ -227,6 +242,12 @@ def evaluate_policies(dates, spots, cashflows, pln_yields, eur_yields,
                 "signal_spot": None if signal_date is None else float(prices[0, signal_date]),
                 "reference_average": None if reference is None else float(reference[0]),
                 "spot_at_trade": float(prices[0, day]),
+                "days_to_settlement": int(days_left[day]),
+                "rate_date": (rate_dates[day].date().isoformat()
+                              if rate_dates is not None and day < maturity else None),
+                "pln_rate_pct": float(pln_rate[day] * 100) if day < maturity else None,
+                "eur_rate_pct": float(euro_rate[day] * 100) if day < maturity else None,
+                "rate_convention": rate_convention if day < maturity else None,
                 "agreed_rate_pln_per_eur": float(ask[0]),
                 "notional_input_currency": float(amount[0] * weights[month]),
                 "settlement_amount_output_currency": float(value[0] * weights[month]),
@@ -357,6 +378,8 @@ ECB_API = "https://data-api.ecb.europa.eu/service/data/EXR/D.PLN.EUR.SP00.A"
 SNAPSHOT_DATE = pd.Timestamp("2026-11-24")
 BENCHMARK_RATES = (4.061, 3.000)  # November 24, 2026 market benchmark yields, percent
 RESULT_COLUMNS = ["benchmark", "tactical", "unhedged", "advantage", "benchmark_locked", "tactical_locked"]
+TENOR_MONTHS = (1, 3, 6, 12)
+CURVE_COLUMNS = [f"{ccy}_{months}m" for ccy in ("pln", "eur") for months in TENOR_MONTHS]
 
 
 def _validated(frame, columns, label):
@@ -376,7 +399,7 @@ def _validated(frame, columns, label):
 
 
 def load_inputs(fx_upload=None, rates_upload=None, refresh_fx=False):
-    """Read bundled ECB spots or compatible user observations; rates are lazy-loaded."""
+    """Read spot and optional paired yield observations. Empty yields select the bundled rate history."""
     if fx_upload is not None:
         frame = pd.read_csv(BytesIO(fx_upload))
         fx_source = "Uploaded daily spot observations (PLN per EUR)."
@@ -396,18 +419,21 @@ def load_inputs(fx_upload=None, rates_upload=None, refresh_fx=False):
     fx = _validated(frame, ["spot"], "FX file")["spot"]
     if (fx <= 0).any():
         raise ValueError("Every daily FX rate must be positive, in PLN per EUR.")
-    rate_source = "Fitted one-year Polish Treasury and German federal zero-coupon yields."
-    rate_note = ("Historical mode fetches Yield Cartography (academic/personal use) and Deutsche Bundesbank. "
-                 "For other uses, upload an authorized yield history. Both inputs are annual effective percentages.")
+    rate_source = ""
+    rate_note = ""
     rates = pd.DataFrame(columns=["pln_yield", "eur_yield"], dtype=float,
                          index=pd.DatetimeIndex([], name="date"))
     if rates_upload is not None:
-        rates = _validated(pd.read_csv(BytesIO(rates_upload)), list(rates.columns), "Yield file")
+        frame = pd.read_csv(BytesIO(rates_upload))
+        is_curve = set(CURVE_COLUMNS).issubset(frame.columns)
+        columns = CURVE_COLUMNS if is_curve else list(rates.columns)
+        rates = _validated(frame, columns, "Yield file")
         if (rates <= -100).any().any():
-            raise ValueError("An effective annual yield must exceed −100%.")
-        rate_source = "Uploaded Polish and euro government yields."
+            raise ValueError("All annual interest rates must exceed −100%.")
+        rate_source = ("Uploaded 1-, 3-, 6- and 12-month PLN and EUR deposit curves." if is_curve else
+                       "Uploaded dated PLN and EUR annual effective yields.")
         rate_note = (f"Uploaded observations from {rates.index.min():%Y-%m-%d} through "
-                     f"{rates.index.max():%Y-%m-%d}; annual effective rates in percent.")
+                     f"{rates.index.max():%Y-%m-%d}, expressed as annual percentages.")
     return fx, rates, {"fx_source": fx_source, "rate_source": rate_source, "rate_note": rate_note}
 
 
@@ -466,6 +492,11 @@ def default_parameters(fx, rates):
     if available.empty:
         pln, eur = BENCHMARK_RATES
         rate_date = SNAPSHOT_DATE
+    elif "pln_12m" in available:
+        # Convert 12M simple deposit quotes to the one-year effective inputs used in simulations.
+        pln, eur = available.iloc[-1][["pln_12m", "eur_12m"]]
+        eur *= 365 / 360
+        rate_date = available.index[-1]
     else:
         pln, eur = available.iloc[-1][["pln_yield", "eur_yield"]]
         rate_date = available.index[-1]
@@ -479,20 +510,68 @@ def _live_yields(start, end):
     return load_government_yields(start, end).set_index("date")
 
 
-def _aligned_rates(rates, grid):
-    # A rate observed at the close of trade date t is not necessarily available
-    # at the ECB fixing. Use strictly earlier observations, never a later close.
-    pos = rates.index.searchsorted(grid, side="left") - 1
+@lru_cache(maxsize=1)
+def _bundled_policy_rates():
+    frame = pd.read_csv(StringIO(POLICY_CHANGES_CSV))
+    return _validated(frame, ["pln_yield", "eur_yield"], "Bundled policy rates")
+
+
+def _asof_rate_dates(rates, grid, *, policy=False):
+    # The last policy decision effective on trade day is public. Market closes use
+    # a strictly prior timestamp because today's close may follow today's ECB fixing.
+    if policy and grid[-1] > POLICY_COVERAGE_END:
+        raise ValueError("This year extends beyond the bundled policy-rate history.")
+    pos = rates.index.searchsorted(grid, side="right" if policy else "left") - 1
     if np.any(pos < 0):
         raise ValueError("Missing prior yield observations.")
     used = rates.index[pos]
-    ages = (grid - used).days.to_numpy()
-    gaps = rates.index.to_series().diff().dropna().dt.days
-    limit = 45 if not gaps.empty and gaps.median() >= 20 else 10
-    if np.max(ages) > limit:
-        raise ValueError(f"Missing yield coverage (maximum permitted quote age {limit} days).")
-    panel = rates.iloc[pos]
-    return panel.pln_yield.to_numpy(), panel.eur_yield.to_numpy(), int(ages.max())
+    if not policy:
+        ages = (grid - used).days.to_numpy()
+        gaps = rates.index.to_series().diff().dropna().dt.days
+        limit = 45 if not gaps.empty and gaps.median() >= 20 else 10
+        if np.max(ages) > limit:
+            raise ValueError(f"Missing yield coverage (maximum permitted quote age {limit} days).")
+    return used
+
+
+@lru_cache(maxsize=1)
+def _bundled_market_curves():
+    frame = pd.read_csv(StringIO(MARKET_CURVES_CSV)).set_index("month")
+    frame.index = pd.PeriodIndex(frame.index, freq="M")
+    return frame[CURVE_COLUMNS]
+
+
+def _market_grid_rates(curves, grid, *, bundled):
+    """Return December-matched simple annual rates, interpolating in log discount factors."""
+    if bundled:
+        # Eurostat normally publishes a monthly series within 15 days. Allow a full
+        # month after month-end. An August trade therefore uses June's average.
+        months = grid.to_period("M") - 2
+        observations = curves.reindex(months)
+        if observations.isna().any().any():
+            raise ValueError("No published monthly market curve for this year.")
+        used = months.to_timestamp(how="end").normalize()
+    else:
+        used = _asof_rate_dates(curves, grid)
+        observations = curves.loc[used]
+    days_left = (grid[-1] - grid).days.to_numpy()
+    tenor_days = np.column_stack([(grid + pd.DateOffset(months=m) - grid).days for m in TENOR_MONTHS])
+    nodes = np.column_stack([np.zeros(len(grid)), tenor_days])
+
+    def matched_rates(ccy, basis):
+        quoted = observations[[f"{ccy}_{m}m" for m in TENOR_MONTHS]].to_numpy() / 100
+        gross = 1 + quoted * tenor_days / basis
+        if np.any(gross <= 0):
+            raise ValueError("Market quotes imply a non-positive deposit accumulation factor.")
+        log_discount = np.column_stack([np.zeros(len(grid)), -np.log(gross)])
+        interpolated = np.array([
+            np.interp(tenor, row_days, row_log_discount)
+            for tenor, row_days, row_log_discount in zip(days_left, nodes, log_discount)
+        ])
+        return np.divide(np.expm1(-interpolated) * basis * 100, days_left,
+                         out=np.zeros(len(grid)), where=days_left > 0)
+
+    return matched_rates("pln", 365), matched_rates("eur", 360), used
 
 
 def _bootstrap_innovations(fx):
@@ -519,14 +598,21 @@ def run_model(fx, rates, *, mode, cashflows, direction, hedge_fraction, delay,
     if not years:
         raise ValueError("No complete joint-calendar year of daily FX data was found.")
     if mode == "historical":
-        if historical_rates not in ("observed", "fixed"):
-            raise ValueError("Choose observed historical yields or explicitly fixed rates.")
+        if historical_rates not in ("observed", "policy", "government", "fixed"):
+            raise ValueError("Choose dated historical rates, live sovereign yields, or fixed rates.")
         # As-of rolling 15 *complete* years. Do not replace a missing year with an older one.
         asof = fx.index[-1]
         end_year = asof.year if asof >= _calendar(asof.year)[-1] else asof.year - 1
         wanted = list(range(end_year - 14, end_year + 1))
-        observed = historical_rates == "observed"
-        if observed and rates.empty:
+        rate_kind = historical_rates
+        if historical_rates == "observed":
+            rate_kind = ("market" if rates.empty else
+                         "uploaded_curve" if set(CURVE_COLUMNS).issubset(rates.columns) else "uploaded")
+        if rate_kind == "market":
+            rates = _bundled_market_curves()
+        elif rate_kind == "policy":
+            rates = _bundled_policy_rates()
+        elif rate_kind == "government":
             rates = _live_yields(f"{wanted[0] - 1}-11-01", f"{end_year}-12-31")
         rows, audit, skipped, ages = [], [], [], []
         for year in wanted:
@@ -535,27 +621,55 @@ def run_model(fx, rates, *, mode, cashflows, direction, hedge_fraction, delay,
                 continue
             grid = years[year]
             pr, er = pln_yield, eur_yield
-            if observed:
+            rate_dates = None
+            if rate_kind != "fixed":
                 try:
-                    pr, er, age = _aligned_rates(rates, grid)
-                    ages.append(age)
-                except ValueError:
-                    skipped.append(f"{year} (yield coverage)")
+                    if rate_kind in ("market", "uploaded_curve"):
+                        pr, er, rate_dates = _market_grid_rates(rates, grid, bundled=rate_kind == "market")
+                    else:
+                        rate_dates = _asof_rate_dates(rates, grid, policy=rate_kind == "policy")
+                        panel = rates.loc[rate_dates]
+                        pr, er = panel.pln_yield.to_numpy(), panel.eur_yield.to_numpy()
+                    ages.append(int((grid - rate_dates).days.max()))
+                except ValueError as exc:
+                    skipped.append(f"{year} ({exc})")
                     continue
             result = evaluate_policies(grid, fx.loc[grid].to_numpy(), pln_yields=pr,
-                                       eur_yields=er, audit=True, **options)
+                                       eur_yields=er, audit=True, rate_dates=rate_dates,
+                                       rate_convention=({"policy": "simple_money_market",
+                                                         "market": "simple_interbank",
+                                                         "uploaded_curve": "simple_interbank"}
+                                                        .get(rate_kind, "annual_effective")),
+                                       **options)
             audit = result["audit"]
             rows.append({"label": year, **{k: float(result[k][0]) for k in RESULT_COLUMNS}})
         if len(rows) < 2:
             raise ValueError("Fewer than two complete years have usable data. Upload broader data or select fixed yields.")
-        rate_note = (f"Historical 1Y yields strictly before execution; maximum quote age in included years: "
-                     f"{max(ages)} calendar days." if observed else
-                     f"Fixed scenario yields for every historical date: PLN {pln_yield:.3f}%, EUR {eur_yield:.3f}%.")
+        if rate_kind == "market":
+            rate_note = ("Eurostat monthly 1M, 3M, 6M and 12M money-market rates (IRT_ST_M). "
+                         "Trades use the average from two calendar months earlier to allow for publication. "
+                         "The ledger's rate date is that observation month's calendar end. "
+                         "Rates shown are maturity-matched equivalent simple yields.")
+        elif rate_kind == "uploaded_curve":
+            rate_note = ("Uploaded 1M, 3M, 6M and 12M money-market curves use the last observation strictly before "
+                         "execution. The ledger gives its date and maturity-matched equivalent simple yields. "
+                         f"Maximum quote age in included years: {max(ages)} calendar days.")
+        elif rate_kind == "policy":
+            rate_note = ("Each trade uses the NBP reference rate and ECB main refinancing rate in force on its "
+                         "execution date. The ledger gives the most recent effective date of a change in either rate. "
+                         "Both rates are held flat from that trade to December using simple ACT/360.")
+        elif rate_kind == "fixed":
+            rate_note = f"Fixed yields for every historical date: PLN {pln_yield:.3f}%, EUR {eur_yield:.3f}%."
+        else:
+            source = ("Live one-year Polish Treasury and German federal yields" if rate_kind == "government"
+                      else "Uploaded PLN and EUR annual effective yields")
+            rate_note = (f"{source}, using the last observation strictly before each trade. "
+                         f"Maximum quote age in included years: {max(ages)} calendar days.")
         coverage = f"{len(rows)} annual observations; same input cash flows repeated in each year."
         if skipped:
             coverage += " Excluded: " + ", ".join(skipped) + "."
         return pd.DataFrame(rows), pd.DataFrame(audit), dict(period=f"{wanted[0]}–{wanted[-1]}",
-            rate_note=rate_note, obs_note=coverage, audit_label=str(rows[-1]["label"]), n=len(rows))
+            rate_kind=rate_kind, rate_note=rate_note, obs_note=coverage, audit_label=str(rows[-1]["label"]), n=len(rows))
 
     if mode not in ("gaussian", "bootstrap") or sim_year not in years:
         raise ValueError("Choose a simulated scenario and a complete reference calendar year.")
@@ -573,8 +687,63 @@ def run_model(fx, rates, *, mode, cashflows, direction, hedge_fraction, delay,
     outcomes = pd.DataFrame({key: result[key] for key in RESULT_COLUMNS})
     outcomes["label"] = np.arange(1, len(outcomes) + 1)
     return outcomes, pd.DataFrame(result["audit"]), dict(period=f"Illustrative January–December ({sim_year} calendar)",
-        rate_note=f"Fixed annual yields on every path: PLN {pln_yield:.3f}%, EUR {eur_yield:.3f}%.",
+        rate_kind="fixed", rate_note=f"Fixed annual yields on every path: PLN {pln_yield:.3f}%, EUR {eur_yield:.3f}%.",
         obs_note=obs_note, audit_label="Simulation 1", n=len(outcomes))
+
+
+def minimum_variance_hedges(outcomes):
+    """Find the least-variance allocation to each configured policy on paired paths.
+
+    A fraction h of every cash flow follows the policy, including its catch-up;
+    the rest stays unhedged. Scaling all notionals preserves timing and prices,
+    so each terminal outcome is U + h * (P - U) for 0 <= h <= 1. Both proceeds
+    and costs use this formula. All risk measures are sample standard deviations.
+    """
+    base = outcomes["unhedged"].to_numpy(dtype=float)
+    if len(base) < 2 or not np.isfinite(base).all():
+        raise ValueError("Hedge optimization needs at least two finite paired outcomes.")
+    # Subtract the first observation before centering to preserve variations
+    # around a large common cash amount and give exactly zero for flat paths.
+    base_moves = base - base[0]
+    base_centered = base_moves - base_moves.mean()
+    base_mean = base.mean()
+    base_sd = base_moves.std(ddof=1)
+    summary, frontier = [], []
+    for policy in ("benchmark", "tactical"):
+        full = outcomes[policy].to_numpy(dtype=float)
+        locked = outcomes[f"{policy}_locked"].to_numpy(dtype=float)
+        if not np.isfinite(full).all() or not np.isfinite(locked).all():
+            raise ValueError("Hedge optimization needs finite policy outcomes and notionals.")
+        delta = full - base
+        delta_moves = delta - delta[0]
+        delta_centered = delta_moves - delta_moves.mean()
+        delta_scale = np.max(np.abs(delta_centered))
+        amount_scale = max(np.max(np.abs(base)), np.max(np.abs(full)))
+        tolerance = 32 * np.finfo(float).eps * amount_scale
+        tied = delta_scale <= tolerance
+        fraction = 0.0
+        if not tied:
+            # Normalisation avoids squaring very large or very small currency amounts.
+            direction = delta_centered / delta_scale
+            slope = np.sum((base_centered / delta_scale) * direction)
+            fraction = float(np.clip(-slope / np.sum(direction * direction), 0.0, 1.0))
+
+        full_mean, full_locked = full.mean(), locked.mean()
+        # Include the analytic minimum on the display curve even between grid points.
+        for h in np.unique(np.append(np.linspace(0, 1, 21), fraction)):
+            row = dict(policy=policy, hedge_fraction=float(h),
+                       mean=(1 - h) * base_mean + h * full_mean,
+                       sd=(base_centered + h * delta_centered).std(ddof=1),
+                       mean_locked=h * full_locked)
+            frontier.append(row)
+            if h == fraction:
+                best = row
+        summary.append(dict(**best, unhedged_mean=base_mean, unhedged_sd=base_sd,
+                            full_mean=full_mean, full_sd=(full - full[0]).std(ddof=1),
+                            full_mean_locked=full_locked, tied=bool(tied),
+                            risk_reduction=(float(np.clip(1 - best["sd"] / base_sd, 0, 1))
+                                            if base_sd > tolerance else np.nan)))
+    return pd.DataFrame(summary).set_index("policy"), pd.DataFrame(frontier)
 
 
 # Streamlit interface
@@ -617,14 +786,51 @@ def csv_download(label, frame, filename):
     )
 
 
+@lru_cache(maxsize=1)
+def biedronka_quarterly_ebit_pln():
+    """Approximate 2025 quarterly Poland Retail EBIT in PLN using the bundled 2025 ECB daily fixings."""
+    ebit_eur_m = np.diff([0, 291, 615, 963, 1_305])  # Cumulative EBIT in the Q1, H1, 9M and FY segment notes.
+    spot = pd.read_csv(StringIO(ECB_SPOT_CSV), parse_dates=["date"], index_col="date").loc["2025", "spot"]
+    quarter_fx = spot.groupby(spot.index.quarter).mean().reindex([1, 2, 3, 4])
+    return ebit_eur_m * 1_000_000 * quarter_fx.to_numpy()
+
+
 def flow_editor(unit, direction):
+    editor_key = f"cashflows_{direction}"
     with st.expander("Monthly cash flows", expanded=False):
         st.write(
             f"Enter January–December amounts in {unit}. Each entry is a forecast known "
             "at the start of the year and is assumed to be received or paid in full. "
             "The historical replay applies this same seasonal cash-flow profile to each year."
         )
-        frame = pd.DataFrame({"Month": MONTHS, "Amount": np.full(12, 1_000_000.0)})
+        if direction == "pln_receipts":
+            basis = st.radio("Basis for the 2025 earnings defaults",
+                             ["Estimated net profit", "Operating profit (EBIT)"],
+                             horizontal=True, key="earnings_basis")
+            quarterly = biedronka_quarterly_ebit_pln()
+            if basis == "Estimated net profit":
+                annual_net_profit = 3_623_931_554.0
+                quarterly = annual_net_profit * (quarterly / quarterly.sum())
+                st.caption(
+                    "Jeronimo Martins Polska S.A. reported PLN 3,623,931,554 in annual net profit. "
+                    "Quarterly net profit is estimated by allocating that total in proportion to "
+                    "Biedronka Poland’s quarterly EBIT converted to PLN."
+                )
+            else:
+                editor_key += "_ebit"
+                st.caption("This preset uses the Polish segment’s operating profit before interest and tax.")
+            monthly_defaults = np.repeat(quarterly / 3, 3)
+            st.caption(
+                "Quarterly EBIT was €291m, €324m, €348m and €342m. Each quarter uses its average 2025 ECB "
+                "PLN/EUR rate and is split equally among its three months. You can enter actual remittances below. "
+                "[Annual net profit](https://raportkrs.pl/krs/0000222483) · "
+                "[Quarterly reports](https://www.jeronimomartins.com/en/investors/financial-results/) · "
+                "[ECB exchange rates](https://data.ecb.europa.eu/data/datasets/EXR/EXR.D.PLN.EUR.SP00.A)"
+            )
+        else:
+            monthly_defaults = np.full(12, 1_000_000.0)
+            st.caption("EUR payments start at an illustrative EUR 1 million per month.")
+        frame = pd.DataFrame({"Month": MONTHS, "Amount": monthly_defaults})
         edited = st.data_editor(
             frame,
             hide_index=True,
@@ -634,7 +840,7 @@ def flow_editor(unit, direction):
                     f"Cash flow ({unit})", min_value=0.0, format="%.2f", required=True
                 )
             },
-            key=f"cashflows_{direction}",
+            key=editor_key,
         )
     return edited["Amount"].to_numpy(dtype=float)
 
@@ -707,13 +913,10 @@ def show_assumptions(direction, cash_unit, report_unit, fraction, schedule, year
         st.markdown("#### Forward and settlement prices")
         st.write(
             "Spot and forwards are PLN per EUR. Each contract has its own trade date and "
-            "the same last-trading-day-of-December settlement. The model treats one-year "
-            "Polish and euro government yields as effective annual rates, flat across "
-            "maturities, and uses actual calendar days divided by 365. When using observed "
-            "yields, pricing uses only data dated before the execution date. Daily series have a "
-            "ten-calendar-day maximum age. For monthly data the limit is 45 calendar days."
+            "the same last-trading-day-of-December settlement. The forward rate equals spot "
+            "times the EUR discount factor divided by the PLN discount factor for that settlement date."
         )
-        st.latex(r"F_{t,D}=S_t\left(\frac{1+y_{\mathrm{PLN},t}}{1+y_{\mathrm{EUR},t}}\right)^{(D-t)/365}")
+        st.latex(r"F_{t,D}=S_t\,\frac{DF_{\mathrm{EUR}}(t,D)}{DF_{\mathrm{PLN}}(t,D)}")
         st.write(
             f"The one-way execution spread is {spread:g} bp on every forward and spot "
             "conversion. To buy EUR, the company pays the modeled rate times "
@@ -721,9 +924,25 @@ def show_assumptions(direction, cash_unit, report_unit, fraction, schedule, year
             + ("A fixed PLN receipt divided by this rate gives EUR proceeds."
                if direction == "pln_receipts" else
                "A fixed EUR amount multiplied by this rate gives the PLN cost.")
-            + " Government yields give indicative forwards. Funding basis, a bank's "
-              "forward curve and any additional charges are outside the calculation."
+            + " These indicative prices omit the cross-currency basis and bank-specific funding charges."
         )
+        if result_meta.get("rate_note"):
+            st.write(result_meta["rate_note"])
+        rate_kind = result_meta.get("rate_kind")
+        if rate_kind in ("market", "uploaded_curve"):
+            st.write(
+                "At each trade, the app converts 1-, 3-, 6- and 12-month simple deposit rates to discount factors "
+                "using actual days divided by 365 for PLN and 360 for EUR. It interpolates linearly in log discount "
+                "factors to the December settlement date, including a discount factor of 1 at zero days. "
+                "Tenors use calendar-month anniversaries of the trade date."
+            )
+            if rate_kind == "market":
+                st.caption("This historical reconstruction uses the published monthly data available in the bundled snapshot. "
+                           "For instance, a March trade uses January’s averages. A daily curve upload lets the replay "
+                           "follow changes within the month.")
+        elif rate_kind in ("fixed", "government", "uploaded"):
+            st.write("For this source, the app holds each annual effective rate flat across maturities and compounds "
+                     "it over the actual days to December divided by 365.")
         st.markdown("#### Scenario and statistics")
         if mode == "historical":
             st.write(
@@ -735,7 +954,7 @@ def show_assumptions(direction, cash_unit, report_unit, fraction, schedule, year
         else:
             st.write(
                 f"Each simulated year starts from {inputs['start_spot']:.4f} PLN/EUR "
-                f"with fixed government yields of {inputs['pln_yield']:.3f}% (PLN) and "
+                f"with fixed effective annual rates of {inputs['pln_yield']:.3f}% (PLN) and "
                 f"{inputs['eur_yield']:.3f}% (EUR). Each of the {paths:,} paths uses the "
                 "same trading dates and cash-flow profile. The starting spot applies to the first trading day of January. Both strategies see exactly "
                 f"the same path. The random-number seed is {seed}."
@@ -767,14 +986,19 @@ def show_assumptions(direction, cash_unit, report_unit, fraction, schedule, year
         )
         st.markdown("#### Data used for this run")
         st.caption(
-            "[ECB daily spot history](https://data.ecb.europa.eu/data/datasets/EXR/EXR.D.PLN.EUR.SP00.A) · "
-            "[Polish fitted sovereign yields](https://yieldcartography.com/curves/) · "
-            "[Bundesbank federal yield curve](https://www.bundesbank.de/en/statistics/money-and-capital-markets/"
-            "interest-rates-and-yields/daily-term-structure-on-listed-federal-securities-651570)"
+            "[ECB daily EUR/PLN reference rates](https://data.ecb.europa.eu/data/datasets/EXR/EXR.D.PLN.EUR.SP00.A)"
         )
-        for note in (source_meta.get("fx_source"), source_meta.get("rate_source"),
-                     source_meta.get("rate_note"), result_meta.get("rate_note"),
-                     result_meta.get("obs_note")):
+        source_links = {
+            "market": "[Eurostat monthly money-market rates](https://ec.europa.eu/eurostat/databrowser/view/irt_st_m/default/table?lang=en)",
+            "policy": "[NBP reference rate history](https://static.nbp.pl/dane/stopy/stopy_procentowe_archiwum.xml) · "
+                      "[ECB main refinancing rate history](https://www.ecb.europa.eu/stats/policy_and_exchange_rates/key_ecb_interest_rates/html/index.en.html)",
+            "government": "[Polish fitted sovereign yields](https://yieldcartography.com/curves/) · "
+                          "[Bundesbank federal yield curve](https://www.bundesbank.de/en/statistics/money-and-capital-markets/"
+                          "interest-rates-and-yields/daily-term-structure-on-listed-federal-securities-651570)",
+        }
+        if result_meta.get("rate_kind") in source_links:
+            st.caption(source_links[result_meta["rate_kind"]])
+        for note in (source_meta.get("fx_source"), result_meta.get("obs_note")):
             if note:
                 st.write(note)
 
@@ -886,6 +1110,130 @@ def show_results(outcomes, audit, meta, unit, direction, mode, year_end_catchup)
         csv_download("Download this trade ledger", audit, "trade_ledger.csv")
 
 
+def show_hedge_ratio_charts(frontier, summary, annual, cash_unit, report_unit, direction, mode, policy_names):
+    noun = "proceeds" if direction == "pln_receipts" else "cost"
+    mean_title = f"{'Historical mean' if mode == 'historical' else 'Expected'} December {noun}"
+    sd_title = f"Standard deviation of December {noun}"
+    st.markdown("#### December payout across hedge ratios")
+    annual_label = "Share of annual cash flow hedged"
+    assigned_label = "Share assigned to the hedge policy"
+    if annual > 0:
+        axis = st.radio("Horizontal axis", [annual_label, assigned_label], horizontal=True,
+                        key="hedge_ratio_axis")
+    else:
+        axis = assigned_label
+        st.caption("Annual cash flow is zero. The charts use the share assigned to each policy.")
+    if axis == annual_label:
+        st.caption("The hedge ratio is the average amount covered by forwards before settlement divided by "
+                   "annual cash flow. Each line ends at the maximum coverage its schedule permits.")
+    else:
+        st.caption("At 0% all cash converts at December spot. At 100% the policy manages every cash flow "
+                   "under the selected schedule. December’s own cash flow still converts at spot.")
+
+    chart = frontier.copy()
+    chart["assigned"] = chart["hedge_fraction"]
+    chart["covered"] = chart["mean_locked"] / annual if annual > 0 else np.nan
+    chart["locked_m"] = chart["mean_locked"] / 1e6
+    chart["mean_m"] = chart["mean"] / 1e6
+    chart["sd_m"] = chart["sd"] / 1e6
+    chart["optimum"] = (chart["assigned"].eq(chart["policy"].map(summary["hedge_fraction"]))
+                        & ~chart["policy"].map(summary["tied"]))
+    chart["policy_name"] = chart["policy"].map(policy_names)
+    x_field = "covered" if axis == annual_label else "assigned"
+    tooltip = [
+        {"field": "policy_name", "type": "nominal", "title": "Policy"},
+        {"field": "assigned", "type": "quantitative", "title": assigned_label, "format": ".2%"},
+    ]
+    if annual > 0:
+        tooltip.append({"field": "covered", "type": "quantitative", "title": annual_label, "format": ".2%"})
+    tooltip.extend([
+        {"field": "locked_m", "type": "quantitative", "title": f"Covered by forwards ({cash_unit} m)", "format": ",.2f"},
+        {"field": "mean_m", "type": "quantitative", "title": f"{mean_title} ({report_unit} m)", "format": ",.2f"},
+        {"field": "sd_m", "type": "quantitative", "title": f"{sd_title} ({report_unit} m)", "format": ",.2f"},
+    ])
+    if chart["optimum"].any():
+        st.caption("Diamonds mark the minimum-variance allocations. Hover over a point to see both payout measures.")
+    else:
+        st.caption("Hover over a point to see both payout measures.")
+    for panel, title, field in zip(st.columns(2), (mean_title, sd_title), ("mean_m", "sd_m")):
+        spec = {
+            "title": title,
+            "height": 250,
+            "encoding": {
+                "x": {"field": x_field, "type": "quantitative", "title": axis,
+                      "scale": {"domain": [0, 1]}, "axis": {"format": ".0%", "tickCount": 6}},
+                "y": {"field": field, "type": "quantitative", "title": f"Million {report_unit}",
+                      "scale": {"zero": False}, "axis": {"format": ",.6~g"}},
+                "color": {"field": "policy_name", "type": "nominal", "title": None,
+                          "sort": list(policy_names.values()),
+                          "legend": {"orient": "bottom", "direction": "horizontal"}},
+                "tooltip": tooltip,
+            },
+            "layer": [
+                {"mark": {"type": "line", "strokeWidth": 2.5, "point": {"filled": True, "size": 24}},
+                 "encoding": {"order": {"field": "assigned", "type": "quantitative"}}},
+                {"transform": [{"filter": "datum.optimum"}],
+                 "mark": {"type": "point", "shape": "diamond", "filled": True, "size": 135,
+                          "stroke": "white", "strokeWidth": 1}},
+            ],
+        }
+        with panel:
+            st.vega_lite_chart(chart, spec)
+
+
+def show_optimum(outcomes, cashflows, cash_unit, report_unit, direction, mode, year_end_catchup):
+    st.subheader("How much to hedge")
+    noun = "EUR proceeds" if direction == "pln_receipts" else "PLN cost"
+    st.write(
+        f"Choose the share of each cash flow that minimizes the standard deviation of December {noun}. "
+        "That share follows the selected installment schedule and timing rule. The rest converts at December spot."
+    )
+    summary, frontier = minimum_variance_hedges(outcomes)
+    annual = float(np.sum(cashflows))
+    policy_names = {"benchmark": "Month-end benchmark", "tactical": "Page 170 timing rule"}
+    locked_column = f"Average hedged before settlement ({cash_unit} m)"
+    mean_column = f"Mean December {'proceeds' if direction == 'pln_receipts' else 'cost'} ({report_unit} m)"
+    sd_column = f"December SD ({report_unit} m)"
+    percent_column = "Annual cash flow hedged"
+    table = pd.DataFrame({
+        "Policy": [policy_names[key] for key in summary.index],
+        "Optimal share assigned": summary["hedge_fraction"].to_numpy(),
+        locked_column: summary["mean_locked"].to_numpy() / 1_000_000,
+        percent_column: summary["mean_locked"].to_numpy() / annual if annual else np.nan,
+        mean_column: summary["mean"].to_numpy() / 1_000_000,
+        sd_column: summary["sd"].to_numpy() / 1_000_000,
+        "SD reduction vs no hedge": summary["risk_reduction"].to_numpy(),
+    })
+    st.dataframe(table.style.format({
+        "Optimal share assigned": "{:.2%}", locked_column: "{:,.2f}",
+        percent_column: "{:.2%}", mean_column: "{:,.2f}", sd_column: "{:,.2f}",
+        "SD reduction vs no hedge": "{:.1%}",
+    }, na_rep="—"), hide_index=True, width="stretch")
+    base = summary.iloc[0]
+    st.caption(
+        f"Unhedged reference: mean {base['unhedged_mean'] / 1_000_000:,.2f} million {report_unit}, "
+        f"standard deviation {base['unhedged_sd'] / 1_000_000:,.2f} million {report_unit}. "
+        + ("The December catch-up covers only the share assigned to the policy. " if year_end_catchup else "")
+        + "December’s own flow always converts at spot. The amount hedged counts only contracts booked before settlement."
+    )
+    if summary["tied"].any():
+        tied_names = ", ".join(policy_names[key] for key in summary.index[summary["tied"]])
+        st.caption(f"All allocations give the same risk to numerical precision for {tied_names}. The table shows 0% in this case.")
+    if mode == "historical":
+        st.caption("The historical optimum is fitted and evaluated on the same calendar years. Changes in each year’s starting exchange rate contribute to the measured risk.")
+    else:
+        st.caption("The estimated optimum depends on the simulated exchange-rate process, interest rates and cash-flow forecast.")
+    show_hedge_ratio_charts(frontier, summary, annual, cash_unit, report_unit, direction, mode, policy_names)
+    with st.expander("How the optimal allocation is calculated"):
+        st.write(
+            "For each path or historical year, let U be the unhedged outcome and P the outcome when "
+            "all cash follows a policy. Assigning share h gives U + h(P − U). The calculation minimizes "
+            "sample variance across those paired outcomes, subject to 0% ≤ h ≤ 100%. "
+            "The installment percentage in the sidebar determines when the assigned exposure is hedged."
+        )
+        st.latex(r"h^*=\min\!\left(1,\max\!\left(0,-\frac{\operatorname{Cov}(U,P-U)}{\operatorname{Var}(P-U)}\right)\right)")
+
+
 def main():
     st.set_page_config(page_title="EUR/PLN hedge comparison", layout="wide")
     st.title("EUR/PLN hedge comparison")
@@ -924,8 +1272,13 @@ def main():
             fx_file = st.file_uploader("Daily PLN per EUR · date,spot", type="csv", key="fx_csv")
             refresh_fx = st.checkbox("Refresh default FX history online", disabled=fx_file is not None)
             rate_file = st.file_uploader(
-                "Government yields in percent · date,pln_yield,eur_yield", type="csv", key="yield_csv"
+                "Dated PLN and EUR rates (%)", type="csv", key="yield_csv",
+                help="Use the date the rates became observable (YYYY-MM-DD). A rate of 4.5 means 4.5%.",
             )
+            st.caption("Flat annual effective yields use this CSV header:")
+            st.code("date,pln_yield,eur_yield", language=None)
+            st.caption("For dated market curves, use simple annual deposit rates (PLN ACT/365, EUR ACT/360):")
+            st.code("date,pln_1m,pln_3m,pln_6m,pln_12m,eur_1m,eur_3m,eur_6m,eur_12m", language=None)
     try:
         fx, rates, source_meta = read_inputs(file_contents(fx_file), file_contents(rate_file), bool(refresh_fx and fx_file is None))
         defaults = default_parameters(fx, rates)
@@ -942,10 +1295,23 @@ def main():
         if mode == "historical":
             st.subheader("Historical forward pricing")
             historical_rates = st.radio(
-                "Government-yield assumption", ["observed", "fixed"],
-                format_func=lambda x: {"observed": "Historical yields at each trade",
-                                       "fixed": "My fixed rates for every year"}[x],
+                "Rates used to price each forward", ["observed", "policy", "government", "fixed"],
+                format_func=lambda x: {
+                    "observed": "Uploaded rate history" if rate_file is not None else "Historical market rates by maturity",
+                    "policy": "Central bank rates in force on the trade date",
+                    "government": "Historical one-year government yields (online)",
+                    "fixed": "Fixed rates for every year",
+                }[x],
             )
+            if historical_rates == "observed" and rate_file is None:
+                st.caption("Eurostat monthly PLN and EUR market rates at 1, 3, 6 and 12 months. "
+                           "Each monthly average enters pricing after one full calendar month has elapsed.")
+            elif historical_rates == "policy":
+                st.caption("Use the NBP reference rate and ECB main refinancing rate effective on the trade date, held flat to December.")
+            elif historical_rates == "government":
+                st.caption("Fetch Polish and German one-year yields online. Each trade uses the most recent available prior observation.")
+            elif historical_rates == "observed":
+                st.caption("Each trade uses the most recent available uploaded observation strictly before the trade date.")
         else:
             st.subheader("Simulated FX paths")
             inputs["start_spot"] = st.number_input(
@@ -970,21 +1336,21 @@ def main():
             seed = st.number_input("Random seed", min_value=0, max_value=2**31-1, value=42)
         if mode != "historical" or historical_rates == "fixed":
             inputs["pln_yield"] = st.number_input(
-                "Polish one-year government yield (%)", min_value=-99.999999,
+                "PLN effective annual rate (%)", min_value=-99.999999,
                 value=inputs["pln_yield"], step=0.1, format="%.3f",
             )
             inputs["eur_yield"] = st.number_input(
-                "Euro one-year government yield (%)", min_value=-99.999999,
+                "EUR effective annual rate (%)", min_value=-99.999999,
                 value=inputs["eur_yield"], step=0.1, format="%.3f",
             )
-        forward = inputs["start_spot"] * (1 + inputs["pln_yield"] / 100) / (1 + inputs["eur_yield"] / 100)
-        st.metric("Indicative one-year forward", f"{forward:.4f} PLN/EUR")
-        st.caption(
-            f"Default spot dated {defaults['valuation_date']} and default yields dated "
-            f"{defaults['rate_date']}. Spot {inputs['start_spot']:.4f} PLN/EUR, PLN yield {inputs['pln_yield']:.3f}%, "
-            f"EUR yield {inputs['eur_yield']:.3f}%. Shown at mid. Each December hedge "
-            "uses its own remaining tenor."
-        )
+        if mode != "historical":
+            forward = inputs["start_spot"] * (1 + inputs["pln_yield"] / 100) / (1 + inputs["eur_yield"] / 100)
+            st.metric("Indicative one-year forward", f"{forward:.4f} PLN/EUR")
+            st.caption(
+                f"Default spot dated {defaults['valuation_date']} and default rates dated "
+                f"{defaults['rate_date']}. The displayed forward is at mid and uses the current "
+                "scenario inputs. Each December hedge uses its own remaining tenor."
+            )
 
     cash_unit, report_unit = ("PLN", "EUR") if direction == "pln_receipts" else ("EUR", "PLN")
     cashflows = flow_editor(cash_unit, direction)
@@ -1020,18 +1386,307 @@ def main():
             outcomes, audit, result_meta = calculate(fx, rates, options)
     except (ValueError, KeyError, OSError) as exc:
         st.error(str(exc))
-        if mode == "historical" and historical_rates == "observed":
+        if mode == "historical" and historical_rates != "fixed":
             st.info(
-                "To replay the same spot history with supplied yields, upload a government-yield "
-                "CSV in the sidebar. The fixed-rates choice runs a separate historical scenario "
-                "using your stated rates."
+                "Choose a rate source with coverage for the FX history, or upload your own dated rates. "
+                "Selecting fixed rates runs a separate scenario using the values you enter."
             )
         show_assumptions(direction, cash_unit, report_unit, fraction, schedule, year_end_catchup, delay, band, spread,
                          mode, sigma, source_meta, {}, inputs, n_paths, seed)
         return
-    show_results(outcomes, audit, result_meta, report_unit, direction, mode, year_end_catchup)
+    comparison_tab, hedge_tab = st.tabs(["Policy comparison", "Hedge ratios"])
+    with comparison_tab:
+        show_results(outcomes, audit, result_meta, report_unit, direction, mode, year_end_catchup)
+    with hedge_tab:
+        show_optimum(outcomes, cashflows, cash_unit, report_unit, direction, mode, year_end_catchup)
     show_assumptions(direction, cash_unit, report_unit, fraction, schedule, year_end_catchup, delay, band, spread,
                      mode, sigma, source_meta, result_meta, inputs, n_paths, seed)
+
+
+# Eurostat IRT_ST_M: PL and EA, IRT_M1/M3/M6/M12, monthly money-market rates (% p.a.).
+# https://ec.europa.eu/eurostat/databrowser/view/irt_st_m/default/table?lang=en
+# Monthly averages 2010-01 through 2026-10, snapshot retrieved 2026-11-26.
+MARKET_CURVES_CSV = """month,pln_1m,pln_3m,pln_6m,pln_12m,eur_1m,eur_3m,eur_6m,eur_12m
+2010-01,3.64,4.24,4.36,4.52,0.437,0.67975,0.97725,1.23215
+2010-02,3.62,4.17,4.26,4.47,0.42145,0.6617,0.96455,1.2252
+2010-03,3.62,4.13,4.23,4.44,0.40617,0.64496,0.95243,1.21513
+2010-04,3.67,3.69,3.58,3.8,0.40465,0.6447,0.9552,1.22515
+2010-05,3.62,3.85,4.01,4.26,0.423,0.68652,0.98224,1.24933
+2010-06,3.63,3.86,4.0,4.24,0.44636,0.72759,1.01177,1.28132
+2010-07,3.62,3.84,3.99,4.24,0.58332,0.84882,1.10423,1.37336
+2010-08,3.6,3.82,4.0,4.24,0.63995,0.8955,1.14718,1.42105
+2010-09,3.42,3.82,4.02,4.25,0.61814,0.8805,1.13727,1.42045
+2010-10,3.61,3.83,4.04,4.26,0.78424,0.99767,1.2239,1.49538
+2010-11,3.61,3.86,4.05,4.27,0.83386,1.04205,1.26905,1.5405
+2010-12,3.64,3.92,4.14,4.35,0.81065,1.0217,1.2507,1.52609
+2011-01,3.74,4.01,4.25,4.44,0.79281,1.01724,1.25357,1.54995
+2011-02,3.87,4.11,4.34,4.51,0.89365,1.08675,1.35225,1.714
+2011-03,3.9,4.18,4.4,4.57,0.90313,1.17552,1.48326,1.92409
+2011-04,4.06,4.27,4.48,4.64,1.12711,1.32121,1.62137,2.08558
+2011-05,4.27,4.4,4.58,4.73,1.24336,1.42509,1.70682,2.14714
+2011-06,4.54,4.61,4.7,4.82,1.279,1.48859,1.74927,2.14414
+2011-07,4.62,4.7,4.77,4.85,1.42181,1.59762,1.81824,2.18267
+2011-08,4.61,4.72,4.83,4.87,1.37343,1.55209,1.75478,2.09691
+2011-09,4.63,4.75,4.85,4.88,1.34718,1.53645,1.73595,2.06691
+2011-10,4.66,4.8,4.88,4.9,1.36348,1.57586,1.7761,2.11014
+2011-11,4.73,4.94,4.95,4.95,1.22659,1.48468,1.70645,2.04391
+2011-12,4.76,4.98,4.99,4.99,1.14295,1.4261,1.67071,2.00352
+2012-01,4.75,4.99,5.01,5.01,0.83618,1.22223,1.50473,1.83664
+2012-02,4.75,4.97,4.99,4.99,0.626,1.04829,1.34538,1.67833
+2012-03,4.72,4.95,4.97,4.97,0.46741,0.85845,1.16368,1.4985
+2012-04,4.71,4.94,4.97,4.97,0.40884,0.74432,1.04021,1.36784
+2012-05,4.86,5.05,5.08,5.08,0.39382,0.68491,0.97036,1.26605
+2012-06,4.92,5.12,5.14,5.14,0.37995,0.65886,0.93452,1.21905
+2012-07,4.91,5.13,5.15,5.16,0.21941,0.49705,0.77941,1.06082
+2012-08,4.91,5.11,5.13,5.13,0.13157,0.33239,0.60609,0.87661
+2012-09,4.9,4.95,4.96,4.98,0.11875,0.2463,0.4839,0.73985
+2012-10,4.83,4.82,4.83,4.83,0.11122,0.20791,0.41183,0.65009
+2012-11,4.64,4.62,4.61,4.6,0.1085,0.192,0.36041,0.58791
+2012-12,4.34,4.26,4.22,4.17,0.11061,0.18547,0.32383,0.54928
+2013-01,4.12,4.03,3.99,3.88,0.11255,0.20491,0.34427,0.57532
+2013-02,3.87,3.8,3.76,3.67,0.12025,0.22335,0.36185,0.59415
+2013-03,3.48,3.48,3.47,3.48,0.11795,0.20605,0.3288,0.54495
+2013-04,3.32,3.29,3.27,3.27,0.1179,0.2089,0.32429,0.52843
+2013-05,3.08,2.86,2.81,2.79,0.11232,0.20123,0.29945,0.48377
+2013-06,2.74,2.69,2.82,2.68,0.12055,0.21025,0.32085,0.50705
+2013-07,2.65,2.7,2.71,2.73,0.125,0.22143,0.33583,0.52539
+2013-08,2.62,2.7,2.72,2.75,0.12782,0.22586,0.34223,0.54232
+2013-09,2.61,2.69,2.72,2.76,0.12814,0.22324,0.34005,0.54343
+2013-10,2.6,2.67,2.71,2.75,0.12826,0.22583,0.34152,0.54096
+2013-11,2.6,2.65,2.7,2.75,0.13205,0.22338,0.3269,0.50638
+2013-12,2.6,2.67,2.7,2.75,0.21435,0.2735,0.37055,0.5425
+2014-01,2.61,2.7,2.72,2.75,0.22418,0.29205,0.396,0.56214
+2014-02,2.61,2.71,2.74,2.78,0.2239,0.2881,0.3866,0.549
+2014-03,2.61,2.71,2.74,2.79,0.23181,0.30533,0.4069,0.57729
+2014-04,2.62,2.72,2.74,2.79,0.25255,0.32975,0.4299,0.60395
+2014-05,2.62,2.72,2.74,2.8,0.25924,0.32457,0.41686,0.59229
+2014-06,2.61,2.69,2.71,2.75,0.1529,0.24143,0.33319,0.51271
+2014-07,2.6,2.68,2.69,2.73,0.09583,0.20504,0.30461,0.48752
+2014-08,2.6,2.65,2.67,2.7,0.08548,0.19157,0.29176,0.4691
+2014-09,2.52,2.45,2.44,2.43,0.01768,0.09709,0.19968,0.36232
+2014-10,2.14,2.07,2.06,2.05,0.00791,0.08261,0.18365,0.33761
+2014-11,2.05,2.03,2.02,2.01,0.00975,0.0809,0.18175,0.3347
+2014-12,2.08,2.06,2.05,2.04,0.02305,0.0809,0.17648,0.32852
+2015-01,2.05,2.03,2.02,2.01,0.00514,0.06267,0.15229,0.29819
+2015-02,1.97,1.92,1.91,1.9,0.0004,0.0482,0.12585,0.25505
+2015-03,1.66,1.67,1.67,1.7,-0.01032,0.02718,0.09686,0.21236
+2015-04,1.64,1.65,1.66,1.68,-0.02895,0.0047,0.0728,0.18045
+2015-05,1.64,1.67,1.72,1.76,-0.04942,-0.01037,0.05705,0.16542
+2015-06,1.66,1.7,1.78,1.81,-0.06336,-0.01391,0.04918,0.16305
+2015-07,1.66,1.72,1.79,1.83,-0.0713,-0.01874,0.04874,0.16726
+2015-08,1.66,1.72,1.8,1.83,-0.08786,-0.02767,0.0439,0.16129
+2015-09,1.66,1.72,1.8,1.83,-0.10518,-0.03705,0.03527,0.15359
+2015-10,1.67,1.73,1.81,1.84,-0.11564,-0.05359,0.01968,0.12791
+2015-11,1.67,1.73,1.8,1.82,-0.14033,-0.08762,-0.01543,0.0789
+2015-12,1.66,1.72,1.78,1.8,-0.1895,-0.12632,-0.03977,0.05891
+2016-01,1.62,1.71,1.76,1.78,-0.22265,-0.14615,-0.0608,0.04235
+2016-02,1.58,1.69,1.74,1.76,-0.24605,-0.18357,-0.11529,-0.00786
+2016-03,1.56,1.67,1.74,1.76,-0.30757,-0.22852,-0.13357,-0.01238
+2016-04,1.56,1.67,1.74,1.76,-0.34119,-0.24919,-0.13795,-0.00976
+2016-05,1.58,1.67,1.74,1.76,-0.348,-0.25718,-0.1445,-0.01259
+2016-06,1.63,1.69,1.76,1.78,-0.35591,-0.26791,-0.16241,-0.028
+2016-07,1.65,1.71,1.79,1.81,-0.36881,-0.29452,-0.18819,-0.05605
+2016-08,1.65,1.71,1.79,1.81,-0.3697,-0.29822,-0.18865,-0.0483
+2016-09,1.65,1.71,1.79,1.81,-0.37136,-0.30164,-0.19914,-0.05709
+2016-10,1.65,1.72,1.8,1.83,-0.37143,-0.309,-0.2071,-0.06876
+2016-11,1.66,1.73,1.81,1.85,-0.37277,-0.31268,-0.21482,-0.07405
+2016-12,1.66,1.73,1.81,1.85,-0.37038,-0.31576,-0.2179,-0.08043
+2017-01,1.66,1.73,1.81,1.85,-0.37127,-0.32555,-0.23555,-0.0945
+2017-02,1.66,1.73,1.81,1.85,-0.3718,-0.3286,-0.24055,-0.1059
+2017-03,1.66,1.73,1.81,1.85,-0.37239,-0.32935,-0.24074,-0.10961
+2017-04,1.66,1.73,1.81,1.85,-0.37244,-0.33039,-0.2455,-0.119
+2017-05,1.66,1.73,1.81,1.85,-0.37318,-0.32945,-0.25086,-0.12723
+2017-06,1.66,1.73,1.81,1.85,-0.37282,-0.33,-0.26682,-0.14909
+2017-07,1.66,1.73,1.81,1.85,-0.37281,-0.33043,-0.27262,-0.1541
+2017-08,1.66,1.73,1.81,1.85,-0.37196,-0.32909,-0.27165,-0.15635
+2017-09,1.66,1.73,1.81,1.85,-0.3721,-0.32938,-0.27262,-0.16829
+2017-10,1.66,1.73,1.81,1.85,-0.37232,-0.32955,-0.27391,-0.17977
+2017-11,1.66,1.73,1.81,1.85,-0.37164,-0.329,-0.27427,-0.18895
+2017-12,1.65,1.72,1.81,1.85,-0.36874,-0.32789,-0.27137,-0.18974
+2018-01,1.65,1.72,1.81,1.85,-0.36882,-0.32845,-0.27418,-0.18868
+2018-02,1.65,1.72,1.81,1.85,-0.3696,-0.3285,-0.2749,-0.19125
+2018-03,1.64,1.71,1.79,1.83,-0.37062,-0.3279,-0.27133,-0.191
+2018-04,1.64,1.7,1.78,1.82,-0.37165,-0.32845,-0.2702,-0.1897
+2018-05,1.64,1.7,1.78,1.82,-0.37082,-0.32523,-0.27,-0.188
+2018-06,1.64,1.7,1.78,1.82,-0.37033,-0.32205,-0.26852,-0.18148
+2018-07,1.64,1.7,1.78,1.82,-0.36968,-0.32073,-0.26918,-0.17955
+2018-08,1.64,1.7,1.78,1.84,-0.36957,-0.319,-0.26678,-0.16926
+2018-09,1.64,1.72,1.79,1.87,-0.37095,-0.31885,-0.26825,-0.1662
+2018-10,1.64,1.72,1.79,1.87,-0.3697,-0.3177,-0.26404,-0.15383
+2018-11,1.64,1.72,1.79,1.87,-0.36882,-0.31636,-0.25659,-0.14741
+2018-12,1.64,1.72,1.79,1.87,-0.36705,-0.31189,-0.24084,-0.12868
+2019-01,1.64,1.72,1.79,1.87,-0.36636,-0.308,-0.23636,-0.11586
+2019-02,1.64,1.72,1.79,1.87,-0.3677,-0.30845,-0.2318,-0.1084
+2019-03,1.64,1.72,1.79,1.87,-0.36748,-0.30919,-0.23024,-0.10876
+2019-04,1.64,1.72,1.79,1.87,-0.36725,-0.31045,-0.23075,-0.1122
+2019-05,1.64,1.72,1.79,1.87,-0.369,-0.31186,-0.23736,-0.13391
+2019-06,1.64,1.72,1.79,1.86,-0.3848,-0.3289,-0.279,-0.19025
+2019-07,1.64,1.72,1.79,1.86,-0.39513,-0.36487,-0.34739,-0.2833
+2019-08,1.64,1.72,1.79,1.85,-0.40959,-0.40768,-0.40495,-0.35627
+2019-09,1.64,1.72,1.79,1.85,-0.44824,-0.41757,-0.39386,-0.33914
+2019-10,1.63,1.72,1.79,1.84,-0.45548,-0.41287,-0.36157,-0.30422
+2019-11,1.63,1.71,1.79,1.84,-0.45,-0.40129,-0.33738,-0.27195
+2019-12,1.63,1.7,1.79,1.84,-0.4529,-0.3947,-0.33555,-0.2614
+2020-01,1.63,1.71,1.79,1.84,-0.45686,-0.39114,-0.33009,-0.25341
+2020-02,1.63,1.71,1.79,1.84,-0.47315,-0.40885,-0.35525,-0.2881
+2020-03,1.4,1.45,1.49,1.53,-0.47768,-0.41664,-0.36486,-0.26564
+2020-04,0.79,0.83,0.84,0.89,-0.4281,-0.25405,-0.192,-0.1082
+2020-05,0.62,0.66,0.67,0.72,-0.46435,-0.27195,-0.14305,-0.08135
+2020-06,0.24,0.27,0.29,0.3,-0.49286,-0.376,-0.22268,-0.14745
+2020-07,0.23,0.25,0.28,0.29,-0.50883,-0.44413,-0.34613,-0.27887
+2020-08,0.2,0.23,0.27,0.27,-0.51733,-0.47971,-0.4329,-0.3589
+2020-09,0.2,0.23,0.26,0.27,-0.52173,-0.49136,-0.46264,-0.41459
+2020-10,0.2,0.22,0.25,0.26,-0.53845,-0.50914,-0.494,-0.466
+2020-11,0.2,0.22,0.25,0.25,-0.54143,-0.52086,-0.509,-0.48062
+2020-12,0.2,0.21,0.25,0.25,-0.56068,-0.53809,-0.51864,-0.49664
+2021-01,0.19,0.21,0.25,0.25,-0.56205,-0.54715,-0.5285,-0.5047
+2021-02,0.19,0.21,0.25,0.25,-0.5534,-0.5411,-0.5205,-0.50085
+2021-03,0.19,0.21,0.25,0.25,-0.55343,-0.53909,-0.516,-0.48674
+2021-04,0.18,0.21,0.24,0.25,-0.55505,-0.53815,-0.5158,-0.4835
+2021-05,0.18,0.21,0.25,0.26,-0.5579,-0.5401,-0.513,-0.48062
+2021-06,0.18,0.21,0.25,0.26,-0.55459,-0.54291,-0.51495,-0.48386
+2021-07,0.18,0.21,0.25,0.26,-0.55623,-0.54482,-0.51595,-0.49073
+2021-08,0.18,0.21,0.25,0.33,-0.56014,-0.54759,-0.52736,-0.49823
+2021-09,0.18,0.24,0.29,0.44,-0.55764,-0.54505,-0.52241,-0.49232
+2021-10,0.5,0.61,0.76,1.03,-0.56043,-0.54981,-0.52724,-0.47676
+2021-11,1.33,1.57,1.9,2.26,-0.56536,-0.56736,-0.534,-0.487
+2021-12,1.98,2.35,2.63,2.86,-0.59626,-0.58196,-0.54461,-0.50196
+2022-01,2.43,2.79,3.17,3.43,-0.56486,-0.56014,-0.52733,-0.47667
+2022-02,2.87,3.33,3.78,3.99,-0.55305,-0.5315,-0.47615,-0.33525
+2022-03,3.69,4.27,4.62,4.74,-0.54443,-0.49543,-0.41765,-0.23739
+2022-04,4.75,5.48,5.72,5.9,-0.53732,-0.44789,-0.31089,0.01305
+2022-05,5.59,6.42,6.65,6.79,-0.54573,-0.38573,-0.14364,0.28659
+2022-06,6.29,6.85,7.12,7.25,-0.52473,-0.23923,0.16168,0.85223
+2022-07,6.7,7.03,7.33,7.47,-0.30643,0.03662,0.46648,0.99152
+2022-08,6.85,7.04,7.3,7.44,0.02243,0.39474,0.83704,1.24948
+2022-09,7.04,7.16,7.34,7.47,0.57386,1.01086,1.59609,2.233
+2022-10,7.08,7.34,7.51,7.62,0.91519,1.42767,1.99738,2.62938
+2022-11,7.03,7.43,7.63,7.76,1.42314,1.82523,2.32123,2.82832
+2022-12,6.98,7.11,7.25,7.38,1.72433,2.06348,2.56033,3.01814
+2023-01,6.9,6.95,7.03,7.13,1.98118,2.34486,2.85786,3.33705
+2023-02,6.89,6.93,7.0,7.1,2.3688,2.64035,3.13535,3.5336
+2023-03,6.86,6.92,6.98,7.08,2.70991,2.91057,3.26743,3.64661
+2023-04,6.86,6.9,6.95,7.06,2.96089,3.17944,3.51561,3.75656
+2023-05,6.85,6.9,6.95,7.06,3.15241,3.37173,3.68177,3.86223
+2023-06,6.85,6.9,6.95,7.01,3.34255,3.53586,3.82527,4.00727
+2023-07,6.86,6.81,6.76,6.75,3.469,3.67181,3.94248,4.14905
+2023-08,6.81,6.69,6.55,6.51,3.62704,3.7803,3.94448,4.07296
+2023-09,6.27,5.99,5.84,5.78,3.75771,3.88005,4.03033,4.14919
+2023-10,5.87,5.68,5.58,5.56,3.86095,3.96764,4.11482,4.16
+2023-11,5.81,5.77,5.73,5.69,3.84068,3.97164,4.06468,4.02209
+2023-12,5.83,5.85,5.82,5.79,3.85763,3.93489,3.92695,3.67911
+2024-01,5.85,5.87,5.84,5.81,3.869,3.92527,3.89168,3.60923
+2024-02,5.83,5.86,5.85,5.84,3.86848,3.92319,3.90052,3.67052
+2024-03,5.85,5.86,5.86,5.86,3.85295,3.9231,3.8948,3.71785
+2024-04,5.84,5.86,5.87,5.86,3.85252,3.88533,3.83824,3.70333
+2024-05,5.86,5.85,5.86,5.86,3.81591,3.81268,3.78664,3.68014
+2024-06,5.84,5.85,5.86,5.86,3.6347,3.7245,3.7149,3.6496
+2024-07,5.84,5.86,5.87,5.86,3.61752,3.68483,3.64357,3.52591
+2024-08,5.84,5.85,5.86,5.85,3.59673,3.54759,3.42491,3.16614
+2024-09,5.83,5.85,5.85,5.81,3.4381,3.43371,3.25781,2.93605
+2024-10,5.82,5.85,5.85,5.74,3.20548,3.16661,3.00161,2.6913
+2024-11,5.82,5.85,5.82,5.66,3.06643,3.00676,2.78752,2.50557
+2024-12,5.83,5.85,5.79,5.6,2.89005,2.8246,2.63215,2.43605
+2025-01,5.82,5.85,5.8,5.62,2.79186,2.70427,2.61441,2.52523
+2025-02,5.83,5.87,5.82,5.62,2.60575,2.52495,2.4596,2.40695
+2025-03,5.86,5.85,5.79,5.58,2.401,2.44243,2.38538,2.39838
+2025-04,5.77,5.59,5.33,5.11,2.24265,2.2494,2.2017,2.1434
+2025-05,5.43,5.26,5.02,4.84,2.0939,2.08724,2.11619,2.08057
+2025-06,5.34,5.22,5.04,4.84,1.92852,1.98362,2.04967,2.0809
+2025-07,5.15,5.02,4.85,4.66,1.89226,1.98635,2.05535,2.07909
+2025-08,5.01,4.88,4.73,4.56,1.89,2.0211,2.08443,2.1139
+2025-09,4.84,4.75,4.61,4.28,1.89723,2.02727,2.10232,2.1715
+2025-10,4.65,4.56,4.41,4.3,1.90626,2.03443,2.10683,2.1873
+2025-11,4.37,4.28,4.17,4.14,1.9056,2.04165,2.131,2.2169
+2025-12,4.14,4.06,3.93,3.89,1.91548,2.04843,2.13948,2.26714
+2026-01,4.04,3.93,3.83,3.76,1.96076,2.02773,2.13714,2.2451
+2026-02,3.98,3.86,3.75,3.66,1.95225,2.0113,2.1435,2.2207
+2026-03,3.84,3.82,3.82,3.83,1.93277,2.10941,2.32195,2.56514
+2026-04,3.78,3.85,3.88,3.91,1.9712,2.1753,2.45375,2.7468
+2026-05,3.79,3.85,3.93,3.98,1.95655,2.2261,2.5364,2.8042
+2026-06,3.78,3.85,3.92,3.97,2.14632,2.339,2.5955,2.79759
+2026-07,3.77,3.82,3.85,3.87,2.21404,2.42539,2.64674,2.85509
+2026-08,3.8,3.83,3.84,3.85,2.22095,2.51314,2.71333,2.95367
+2026-09,3.77,3.84,3.88,3.91,2.41436,2.63505,2.92159,3.247
+2026-10,3.8,3.88,3.95,4.0,2.43582,2.63468,2.97468,3.23859
+"""
+
+
+# NBP reference rate effective dates: https://static.nbp.pl/dane/stopy/stopy_procentowe_archiwum.xml
+# ECB main refinancing operations: FM.B.U2.EUR.4F.KR.MRR_FR.LEV (ECB Data Portal).
+# The paired snapshot contains an opening level, then a row whenever either policy rate changes.
+POLICY_COVERAGE_END = pd.Timestamp("2026-11-24")
+POLICY_CHANGES_CSV = """date,pln_yield,eur_yield
+2010-01-01,3.5,1.0
+2011-01-20,3.75,1.0
+2011-04-06,4.0,1.0
+2011-04-13,4.0,1.25
+2011-05-12,4.25,1.25
+2011-06-09,4.5,1.25
+2011-07-13,4.5,1.5
+2011-11-09,4.5,1.25
+2011-12-14,4.5,1.0
+2012-05-10,4.75,1.0
+2012-07-11,4.75,0.75
+2012-11-08,4.5,0.75
+2012-12-06,4.25,0.75
+2013-01-10,4.0,0.75
+2013-02-07,3.75,0.75
+2013-03-07,3.25,0.75
+2013-05-08,3.25,0.5
+2013-05-09,3.0,0.5
+2013-06-06,2.75,0.5
+2013-07-04,2.5,0.5
+2013-11-13,2.5,0.25
+2014-06-11,2.5,0.15
+2014-09-10,2.5,0.05
+2014-10-09,2.0,0.05
+2015-03-05,1.5,0.05
+2016-03-16,1.5,0.0
+2020-03-18,1.0,0.0
+2020-04-09,0.5,0.0
+2020-05-29,0.1,0.0
+2021-10-07,0.5,0.0
+2021-11-04,1.25,0.0
+2021-12-09,1.75,0.0
+2022-01-05,2.25,0.0
+2022-02-09,2.75,0.0
+2022-03-09,3.5,0.0
+2022-04-07,4.5,0.0
+2022-05-06,5.25,0.0
+2022-06-09,6.0,0.0
+2022-07-08,6.5,0.0
+2022-07-27,6.5,0.5
+2022-09-08,6.75,0.5
+2022-09-14,6.75,1.25
+2022-11-02,6.75,2.0
+2022-12-21,6.75,2.5
+2023-02-08,6.75,3.0
+2023-03-22,6.75,3.5
+2023-05-10,6.75,3.75
+2023-06-21,6.75,4.0
+2023-08-02,6.75,4.25
+2023-09-07,6.0,4.25
+2023-09-20,6.0,4.5
+2023-10-05,5.75,4.5
+2024-06-12,5.75,4.25
+2024-09-18,5.75,3.65
+2024-10-23,5.75,3.4
+2024-12-18,5.75,3.15
+2025-02-05,5.75,2.9
+2025-03-12,5.75,2.65
+2025-04-23,5.75,2.4
+2025-05-08,5.25,2.4
+2025-06-11,5.25,2.15
+2025-07-03,5.0,2.15
+2025-09-04,4.75,2.15
+2025-10-09,4.5,2.15
+2025-11-06,4.25,2.15
+2025-12-04,4.0,2.15
+2026-03-05,3.75,2.15
+2026-06-17,3.75,2.4
+2026-09-16,3.75,2.65
+"""
 
 
 # ECB series EXR.D.PLN.EUR.SP00.A, daily PLN per EUR, 2010-11-01 to 2026-11-24.
@@ -5156,3 +5811,4 @@ ECB_SPOT_CSV = """date,spot
 
 if __name__ == "__main__":
     main()
+
